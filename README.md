@@ -6,6 +6,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Cross--Platform-blue)](https://github.com/ahmetselmancloud/airmesh)
 [![Transfer Speed](https://img.shields.io/badge/Speed-50--90%2B%20MB%2Fs-success)](#)
 [![Zero-Install](https://img.shields.io/badge/Client-Zero--Install%20(Web%20Only)-orange)](#)
+[![Roadmap](https://img.shields.io/badge/Roadmap-v1.1%20Planned-purple)](ROADMAP.md)
 
 > **Sıfır İnternet Kotası • Sıfır İstemci Kurulumu • Çapraz Platform (Android, iOS, PC, Mac) • Donanım Hızında (50–90+ MB/s) Aktarım**
 
@@ -152,6 +153,12 @@ go build -o airmesh.exe main.go
 - `Escape`: Açık olan tüm modalları (Lightbox, Yeniden Adlandır, Klasör, Güvenlik, QR vb.) anında kapatır.
 - `Enter`: Arama ve form gönderimlerini anında onaylar.
 - `Sürükle-Bırak`: Dosyaları tarayıcıya sürükleyerek yükleyin veya dosya kartını bir klasörün üstüne bırakarak içine taşıyın.
+
+---
+
+## 🗺️ Gelecek Yol Haritası (Roadmap)
+
+AirMesh'in gelecek sürümlerine (v1.1 Token-Bucket ile Adil Bant Genişliği Dağıtımı, v1.2 macOS/Linux Masaüstü Entegrasyonu, v2.0 Android Host Mobil Sunucu APK vb.) ilişkin teknik hedefler ve kilometre taşları için **[ROADMAP.md](ROADMAP.md)** belgesine göz atabilirsiniz.
 
 ---
 
