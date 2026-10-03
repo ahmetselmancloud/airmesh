@@ -231,13 +231,26 @@ function initQrModal() {
 // Theme Toggle
 function initTheme() {
   const saved = localStorage.getItem('airmesh_theme') || 'dark';
-  document.documentElement.setAttribute('data-theme', saved);
+  applyTheme(saved);
+
   themeToggle?.addEventListener('click', () => {
     const current = document.documentElement.getAttribute('data-theme');
     const next = current === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
+    applyTheme(next);
     localStorage.setItem('airmesh_theme', next);
   });
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    if (themeToggle) {
+      themeToggle.textContent = theme === 'dark' ? '🌓' : '☀️';
+      themeToggle.title = theme === 'dark' ? 'Aydınlık Temaya Geç' : 'Karanlık Temaya Geç';
+    }
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme) {
+      metaTheme.setAttribute('content', theme === 'dark' ? '#0b0f19' : '#f8fafc');
+    }
+  }
 }
 
 // WebSocket Connection
@@ -747,8 +760,14 @@ function initLightbox() {
   lightboxCloseBtn?.addEventListener('click', closeLightbox);
   lightboxBackdrop?.addEventListener('click', closeLightbox);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && lightboxModal?.classList.contains('active')) {
-      closeLightbox();
+    if (e.key === 'Escape') {
+      if (lightboxModal?.classList.contains('active')) closeLightbox();
+      if (mediaModal?.classList.contains('active')) closeModal();
+      qrModal?.classList.remove('active');
+      wifiQrModal?.classList.remove('active');
+      securityModal?.classList.remove('active');
+      newFolderModal?.classList.remove('active');
+      renameModal?.classList.remove('active');
     }
   });
 }
@@ -1604,6 +1623,11 @@ function initFolderHandlers() {
     const name = newFolderNameInput?.value?.trim();
     if (!name) return;
 
+    if (/[\\/:*?"<>|]/.test(name)) {
+      showToast('Klasör adında geçersiz karakterler bulunamaz (\\ / : * ? " < > |)', 'error');
+      return;
+    }
+
     try {
       const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
       const res = await fetch(`/api/mkdir?name=${encodeURIComponent(name)}${dirQuery}`, {
@@ -1695,6 +1719,11 @@ function initRenameHandlers() {
     const newName = renameNewNameInput.value.trim();
     if (!oldName || !newName || oldName === newName) {
       closeRename();
+      return;
+    }
+
+    if (/[\\/:*?"<>|]/.test(newName)) {
+      showToast('Dosya adında geçersiz karakterler bulunamaz (\\ / : * ? " < > |)', 'error');
       return;
     }
 

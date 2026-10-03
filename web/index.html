@@ -272,7 +272,7 @@
     <!-- Media Player Modal for Streaming Previews -->
     <div class="modal" id="mediaModal">
       <div class="modal-backdrop" id="modalBackdrop"></div>
-      <div class="modal-content">
+      <div class="modal-content has-header">
         <div class="modal-header">
           <h3 id="modalMediaTitle">Medya Önizleme</h3>
           <button class="modal-close" id="modalCloseBtn">✕</button>
@@ -286,7 +286,7 @@
     <!-- QR Code Modal -->
     <div class="modal" id="qrModal">
       <div class="modal-backdrop" id="qrModalBackdrop"></div>
-      <div class="modal-content" style="max-width: 360px; text-align: center;">
+      <div class="modal-content has-header" style="max-width: 360px; text-align: center;">
         <div class="modal-header">
           <h3>Bağlantı QR Kodu</h3>
           <button class="modal-close" id="qrModalCloseBtn">✕</button>
@@ -302,7 +302,7 @@
     <!-- Wi-Fi QR Code Modal -->
     <div class="modal" id="wifiQrModal">
       <div class="modal-backdrop" id="wifiQrModalBackdrop"></div>
-      <div class="modal-content" style="max-width: 360px; text-align: center;">
+      <div class="modal-content has-header" style="max-width: 360px; text-align: center;">
         <div class="modal-header">
           <h3>Wi-Fi Otomatik Bağlantı QR</h3>
           <button class="modal-close" id="wifiQrModalCloseBtn">✕</button>
@@ -318,7 +318,7 @@
     <!-- Lightbox Image Preview Modal -->
     <div class="modal" id="lightboxModal">
       <div class="modal-backdrop" id="lightboxBackdrop"></div>
-      <div class="modal-content" style="max-width: 90vw; max-height: 90vh; background: transparent; border: none; box-shadow: none; text-align: center;">
+      <div class="modal-content transparent-modal" style="max-width: 90vw; max-height: 90vh; text-align: center;">
         <button class="modal-close" id="lightboxCloseBtn" style="position: absolute; top: -12px; right: -12px; background: rgba(0,0,0,0.8); width: 36px; height: 36px; border-radius: 50%; color: white; z-index: 10; border: 1px solid rgba(255,255,255,0.2);">✕</button>
         <img id="lightboxImg" src="" alt="Önizleme" style="max-width: 100%; max-height: 75vh; object-fit: contain; border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.8);">
         <div style="margin-top: 12px; display: flex; justify-content: center; gap: 12px; align-items: center;">
@@ -338,7 +338,7 @@
           Bu yerel paylaşım odası PIN kodu ile korunmaktadır. Dosyalara erişmek için 4 haneli PIN kodunu girin.
         </p>
         <form id="pinForm">
-          <input type="password" id="pinInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="••••" style="font-size: 26px; letter-spacing: 10px; text-align: center; width: 180px; margin: 0 auto 14px auto; padding: 10px; border-radius: var(--radius-md); border: 2px solid var(--primary-color); background: rgba(0,0,0,0.3); color: #fff; display: block;">
+          <input type="password" id="pinInput" class="form-input" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="••••" style="font-size: 26px; letter-spacing: 10px; text-align: center; width: 180px; margin: 0 auto 14px auto; padding: 10px; border: 2px solid var(--primary-color); display: block;">
           <div id="pinErrorMsg" style="color: var(--danger-color); font-size: 12px; margin-bottom: 12px; display: none;">Hatalı PIN kodu!</div>
           <button type="submit" class="btn-primary" style="width: 100%;">Giriş Yap</button>
         </form>
@@ -374,7 +374,7 @@
           <!-- PIN Code Input -->
           <div id="secPinInputGroup" style="background: rgba(255,255,255,0.03); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--surface-border); display: none;">
             <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px;">4 Haneli PIN Kodu</label>
-            <input type="text" id="secPinCodeInput" maxlength="6" placeholder="Örn: 1234" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border); background: rgba(0,0,0,0.25); color: #fff; font-size: 15px; letter-spacing: 2px;">
+            <input type="text" id="secPinCodeInput" class="form-input" maxlength="6" placeholder="Örn: 1234" style="letter-spacing: 2px;">
           </div>
 
           <!-- Read-Only Mode Toggle -->
@@ -413,7 +413,7 @@
         <button class="modal-close" id="newFolderCloseBtn">✕</button>
         <h3 style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">📁 Yeni Klasör Oluştur</h3>
         <form id="newFolderForm">
-          <input type="text" id="newFolderNameInput" placeholder="Klasör adı..." required style="width: 100%; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border); background: rgba(0,0,0,0.25); color: #fff; font-size: 14px; margin-bottom: 14px;">
+          <input type="text" id="newFolderNameInput" class="form-input" placeholder="Klasör adı..." required style="margin-bottom: 14px;">
           <div style="display: flex; gap: 10px; justify-content: flex-end;">
             <button type="button" class="action-btn-sm" id="cancelNewFolderBtn">Vazgeç</button>
             <button type="submit" class="btn-primary" style="padding: 8px 18px;">Oluştur</button>
@@ -431,7 +431,7 @@
         <form id="renameForm">
           <input type="hidden" id="renameOldName">
           <div id="renameCurrentLabel" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px; word-break: break-all;"></div>
-          <input type="text" id="renameNewNameInput" required style="width: 100%; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border); background: rgba(0,0,0,0.25); color: #fff; font-size: 14px; margin-bottom: 14px;">
+          <input type="text" id="renameNewNameInput" class="form-input" required style="margin-bottom: 14px;">
           <div style="display: flex; gap: 10px; justify-content: flex-end;">
             <button type="button" class="action-btn-sm" id="cancelRenameBtn">Vazgeç</button>
             <button type="submit" class="btn-primary" style="padding: 8px 18px;">Kaydet</button>
