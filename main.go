@@ -59,21 +59,35 @@ func main() {
 		}
 	}
 
+	// Bind listener with automatic port fallback if port is busy
+	port := *portFlag
+	var listener *server.OptimizedTCPListener
+	for i := 0; i < 10; i++ {
+		tryPort := port + i
+		l, err := server.NewOptimizedListener(fmt.Sprintf("0.0.0.0:%d", tryPort), 4*1024*1024)
+		if err == nil {
+			listener = l
+			port = tryPort
+			if i > 0 {
+				fmt.Printf("⚠️  Port %d meşgul olduğu için otomatik olarak Port %d seçildi.\n", *portFlag, port)
+			}
+			break
+		}
+	}
+	if listener == nil {
+		log.Fatalf("Port %d ve sonraki portlar dinlenemedi.", *portFlag)
+	}
+
 	// Query Windows Mobile Hotspot config
 	hotspotCfg, _ := server.GetHotspotConfig()
 
-	// Print beautiful terminal banner
-	server.PrintBanner(localIPs, *portFlag, sharedDir, dnsServer != nil, hotspotCfg)
+	// Print beautiful terminal banner with actual active port
+	server.PrintBanner(localIPs, port, sharedDir, dnsServer != nil, hotspotCfg)
 
 	// Create and start HTTP server with 4MB TCP socket buffers and TCP_NODELAY
 	srv := server.NewServer(sharedDir, webSubFS)
 	httpServer := &http.Server{
 		Handler: srv.Routes(),
-	}
-
-	listener, err := server.NewOptimizedListener(fmt.Sprintf("0.0.0.0:%d", *portFlag), 4*1024*1024)
-	if err != nil {
-		log.Fatalf("Soket dinlenemedi: %v", err)
 	}
 
 	// Graceful shutdown handling
