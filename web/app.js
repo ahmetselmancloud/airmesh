@@ -39,11 +39,32 @@ const modalCloseBtn = document.getElementById('modalCloseBtn');
 const modalMediaBody = document.getElementById('modalMediaBody');
 const modalMediaTitle = document.getElementById('modalMediaTitle');
 const themeToggle = document.getElementById('themeToggle');
+const showQrBtn = document.getElementById('showQrBtn');
+const qrModal = document.getElementById('qrModal');
+const qrModalCloseBtn = document.getElementById('qrModalCloseBtn');
+const qrModalBackdrop = document.getElementById('qrModalBackdrop');
+const qrImage = document.getElementById('qrImage');
+const qrUrlText = document.getElementById('qrUrlText');
+const downloadAllZipBtn = document.getElementById('downloadAllZipBtn');
+const toastContainer = document.getElementById('toastContainer');
+
+// Toast Notification System
+function showToast(message, type = 'info') {
+  if (!toastContainer) return;
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `<span>${message}</span>`;
+  toastContainer.appendChild(toast);
+  setTimeout(() => {
+    toast.remove();
+  }, 4000);
+}
 
 // Init
 document.addEventListener('DOMContentLoaded', () => {
   initTabs();
   initTheme();
+  initQrModal();
   initWebSocket();
   loadFiles();
   initUploadHandlers();
@@ -65,7 +86,23 @@ function initTabs() {
   });
 
   document.getElementById('refreshFilesBtn')?.addEventListener('click', loadFiles);
+  downloadAllZipBtn?.addEventListener('click', () => {
+    window.location.href = '/api/zip';
+  });
   fileSearch?.addEventListener('input', filterFiles);
+}
+
+// QR Code Modal
+function initQrModal() {
+  showQrBtn?.addEventListener('click', () => {
+    const currentUrl = window.location.origin;
+    qrImage.src = `/api/qr?text=${encodeURIComponent(currentUrl)}`;
+    qrUrlText.textContent = currentUrl;
+    qrModal.classList.add('active');
+  });
+
+  qrModalCloseBtn?.addEventListener('click', () => qrModal.classList.remove('active'));
+  qrModalBackdrop?.addEventListener('click', () => qrModal.classList.remove('active'));
 }
 
 // Theme Toggle
@@ -116,8 +153,15 @@ function handleWsMessage(msg) {
     case 'chat':
       appendChatMessage(msg.sender, msg.text, msg.senderId === state.deviceId);
       break;
+    case 'file_uploaded':
+      showToast(`📥 <b>${escapeHtml(msg.uploader)}</b> yeni bir dosya yükledi: <i>${escapeHtml(msg.fileName)}</i>`, 'success');
+      break;
     case 'file_list_updated':
       loadFiles();
+      break;
+    case 'sync_play_track':
+      setupSyncTrack(msg.url, msg.title);
+      showToast(`🎵 Odada yeni bir şarkı seçildi: <b>${escapeHtml(msg.title)}</b>`, 'info');
       break;
     case 'sync_play':
       handleSyncPlayAction(msg);
@@ -167,12 +211,39 @@ function renderFiles(files) {
           </div>
         </div>
         <div class="file-actions">
+          ${isAudio ? `<button class="btn-icon-action" onclick="syncPlayAudio('${encodeURIComponent(file.name)}')">📻 Odada Çal</button>` : ''}
           ${isMedia ? `<button class="btn-icon-action" onclick="streamMedia('${encodeURIComponent(file.name)}', '${isVideo ? 'video' : 'audio'}')">▶️ İzle</button>` : ''}
           <a class="btn-icon-action" href="/api/download?file=${encodeURIComponent(file.name)}" download="${escapeHtml(file.name)}">⬇️ İndir</a>
         </div>
       </div>
     `;
   }).join('');
+}
+
+window.syncPlayAudio = function(encodedName) {
+  const fileName = decodeURIComponent(encodedName);
+  const streamUrl = `/api/stream?file=${encodedName}`;
+  setupSyncTrack(streamUrl, fileName);
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({
+      type: 'sync_play_track',
+      url: streamUrl,
+      title: fileName
+    }));
+  }
+  document.querySelector('.tab-btn[data-tab="syncplay"]')?.click();
+  showToast(`🎵 "${fileName}" şarkısı odadaki tüm cihazlar için yüklendi!`, 'success');
+};
+
+function setupSyncTrack(url, title) {
+  const player = document.getElementById('syncAudioPlayer');
+  const titleEl = document.getElementById('syncTrackTitle');
+  if (player && url) {
+    player.src = url;
+  }
+  if (titleEl && title) {
+    titleEl.textContent = title;
+  }
 }
 
 function filterFiles() {
@@ -330,7 +401,7 @@ function uploadSingleFile(file) {
     percentText.style.color = '#ef4444';
   });
 
-  xhr.open('POST', `/api/upload?name=${encodeURIComponent(file.name)}`, true);
+  xhr.open('POST', `/api/upload?name=${encodeURIComponent(file.name)}&uploader=${encodeURIComponent(state.deviceName)}`, true);
   xhr.send(file);
 }
 
@@ -385,6 +456,47 @@ function initSyncPlay() {
   const syncBtn = document.getElementById('syncPlayBtn');
   const disc = document.getElementById('musicDisc');
   const player = document.getElementById('syncAudioPlayer');
+  const progressWrap = document.getElementById('audioProgressWrap');
+  const progressFill = document.getElementById('audioProgressFill');
+  const curTimeEl = document.getElementById('currentTime');
+  const totTimeEl = document.getElementById('totalTime');
+
+  player.addEventListener('timeupdate', () => {
+    if (player.duration) {
+      const pct = (player.currentTime / player.duration) * 100;
+      progressFill.style.width = pct + '%';
+      curTimeEl.textContent = formatTime(player.currentTime);
+      totTimeEl.textContent = formatTime(player.duration);
+    }
+  });
+
+  player.addEventListener('play', () => {
+    state.isPlayingSync = true;
+    disc.classList.add('playing');
+    syncBtn.textContent = '⏸️';
+  });
+
+  player.addEventListener('pause', () => {
+    state.isPlayingSync = false;
+    disc.classList.remove('playing');
+    syncBtn.textContent = '▶️';
+  });
+
+  progressWrap?.addEventListener('click', (e) => {
+    const rect = progressWrap.getBoundingClientRect();
+    const pos = (e.clientX - rect.left) / rect.width;
+    if (player.duration) {
+      const seekTime = pos * player.duration;
+      player.currentTime = seekTime;
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({
+          type: 'sync_play',
+          action: state.isPlayingSync ? 'play' : 'pause',
+          time: seekTime
+        }));
+      }
+    }
+  });
 
   syncBtn?.addEventListener('click', () => {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
@@ -395,6 +507,13 @@ function initSyncPlay() {
       time: player.currentTime
     }));
   });
+}
+
+function formatTime(sec) {
+  if (isNaN(sec)) return '00:00';
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
 }
 
 function handleSyncPlayAction(msg) {

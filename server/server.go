@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bufio"
 	"crypto/sha1"
 	"encoding/base64"
@@ -17,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/skip2/go-qrcode"
 )
 
 type FileItem struct {
@@ -61,6 +64,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/download", s.handleDownload)
 	mux.HandleFunc("/api/stream", s.handleStream)
 	mux.HandleFunc("/api/upload", s.handleUpload)
+	mux.HandleFunc("/api/zip", s.handleZipStream)
+	mux.HandleFunc("/api/qr", s.handleQR)
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
 	// Static web assets from embedded filesystem
@@ -227,6 +232,11 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	uploader := r.URL.Query().Get("uploader")
+	if uploader == "" {
+		uploader = "Bir Cihaz"
+	}
+
 	// Direct streaming from body to disk with 4MB buffer (No memory bloat!)
 	outFile, err := os.Create(fullPath)
 	if err != nil {
@@ -243,9 +253,81 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = bufWriter.Flush()
 
+	// Broadcast upload notification and list refresh to all clients
+	toastPayload, _ := json.Marshal(map[string]interface{}{
+		"type":     "file_uploaded",
+		"fileName": fileName,
+		"uploader": uploader,
+	})
+	s.hub.broadcast(toastPayload)
 	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
+
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"success"}`))
+}
+
+// On-the-fly streaming zip without buffering entire archive on disk or in RAM
+func (s *Server) handleZipStream(w http.ResponseWriter, r *http.Request) {
+	entries, err := os.ReadDir(s.SharedDir)
+	if err != nil {
+		http.Error(w, "Klasör okunamadı", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"airmesh_tum_dosyalar.zip\"")
+
+	zipWriter := zip.NewWriter(w)
+	defer zipWriter.Close()
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		filePath := filepath.Join(s.SharedDir, entry.Name())
+		file, err := os.Open(filePath)
+		if err != nil {
+			continue
+		}
+
+		stat, err := file.Stat()
+		if err != nil {
+			file.Close()
+			continue
+		}
+
+		header, err := zip.FileInfoHeader(stat)
+		if err != nil {
+			file.Close()
+			continue
+		}
+		header.Method = zip.Deflate
+
+		entryWriter, err := zipWriter.CreateHeader(header)
+		if err != nil {
+			file.Close()
+			continue
+		}
+
+		_, _ = io.Copy(entryWriter, file)
+		file.Close()
+	}
+}
+
+// Generates dynamic QR code PNG for the provided URL/text
+func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
+	text := r.URL.Query().Get("text")
+	if text == "" {
+		text = "http://" + r.Host
+	}
+	png, err := qrcode.Encode(text, qrcode.Medium, 256)
+	if err != nil {
+		http.Error(w, "QR üretilemedi", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(png)
 }
 
 // Pure Go RFC6455 WebSocket Implementation
@@ -257,8 +339,9 @@ type WSClient struct {
 }
 
 type WSHub struct {
-	mu      sync.Mutex
-	clients map[*WSClient]bool
+	mu          sync.Mutex
+	clients     map[*WSClient]bool
+	lastSyncMsg []byte
 }
 
 func newWSHub() *WSHub {
@@ -271,9 +354,14 @@ func (h *WSHub) register(c *WSClient) {
 	h.mu.Lock()
 	h.clients[c] = true
 	count := len(h.clients)
+	lastSync := h.lastSyncMsg
 	h.mu.Unlock()
 
 	h.broadcast([]byte(fmt.Sprintf(`{"type":"device_count","count":%d}`, count)))
+	if len(lastSync) > 0 {
+		frame := encodeWSTextFrame(lastSync)
+		_, _ = c.conn.Write(frame)
+	}
 }
 
 func (h *WSHub) unregister(c *WSClient) {
@@ -350,6 +438,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if len(msg) > 0 {
+			if strings.Contains(string(msg), `"type":"sync_play"`) {
+				s.hub.mu.Lock()
+				s.hub.lastSyncMsg = msg
+				s.hub.mu.Unlock()
+			}
 			s.hub.broadcast(msg)
 		}
 	}

@@ -3,6 +3,8 @@ package server
 import (
 	"fmt"
 	"net"
+
+	"github.com/skip2/go-qrcode"
 )
 
 // GetLocalIPs returns non-loopback IPv4 addresses
@@ -51,7 +53,7 @@ func GetLocalIPs() ([]string, error) {
 	return ips, nil
 }
 
-// PrintBanner prints a clean terminal banner for the host
+// PrintBanner prints a clean terminal banner and ASCII QR code for the host
 func PrintBanner(ips []string, port int, sharedDir string, captiveEnabled bool) {
 	fmt.Println("==================================================================")
 	fmt.Println("   ⚡ AirMesh — Yüksek Hızlı Yerel Dosya & Medya Ekosistemi ⚡   ")
@@ -65,11 +67,28 @@ func PrintBanner(ips []string, port int, sharedDir string, captiveEnabled bool) 
 	}
 	fmt.Println("------------------------------------------------------------------")
 	fmt.Println("📱 Alıcı Cihazlar İçin Doğrudan Bağlantı Adresleri:")
-	for _, ip := range ips {
-		fmt.Printf("   👉 http://%s:%d\n", ip, port)
+	
+	var primaryURL string
+	for i, ip := range ips {
+		url := fmt.Sprintf("http://%s:%d", ip, port)
+		if i == 0 {
+			primaryURL = url
+		}
+		fmt.Printf("   👉 %s\n", url)
 	}
+
+	if primaryURL != "" {
+		fmt.Println("------------------------------------------------------------------")
+		fmt.Println("📷 Telefon Kamerasıyla Anında Bağlanmak İçin QR Kod:")
+		q, err := qrcode.New(primaryURL, qrcode.Medium)
+		if err == nil {
+			// Invert color is usually true on dark terminal backgrounds
+			fmt.Println(q.ToSmallString(true))
+		}
+	}
+
 	fmt.Println("------------------------------------------------------------------")
-	fmt.Println("💡 Not: Telefon veya bilgisayarları aynı Wi-Fi / Hotspot ağına")
-	fmt.Println("   bağlayıp yukarıdaki adresi tarayıcıda açmanız yeterlidir!")
+	fmt.Println("💡 Telefonunuzu aynı Wi-Fi ağına veya PC'nin Hotspot'una bağlayıp")
+	fmt.Println("   kameranızla yukarıdaki QR kodu okutmanız yeterlidir!")
 	fmt.Println("==================================================================")
 }

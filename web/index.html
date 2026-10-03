@@ -19,6 +19,7 @@
         </div>
       </div>
       <div class="header-stats">
+        <button id="showQrBtn" class="icon-btn" title="QR Kodu Göster">📲</button>
         <span class="chip" id="deviceCountChip">👥 0 Cihaz</span>
         <button id="themeToggle" class="icon-btn" title="Tema Değiştir">🌓</button>
       </div>
@@ -54,6 +55,7 @@
             <span class="search-icon">🔍</span>
             <input type="text" id="fileSearch" placeholder="Dosyalarda ara...">
           </div>
+          <button class="action-btn-sm" id="downloadAllZipBtn" title="Tüm Dosyaları İndir">📦 ZIP İndir</button>
           <button class="action-btn-sm" id="refreshFilesBtn" title="Listeyi Yenile">🔄 Yenile</button>
         </div>
 
@@ -138,6 +140,25 @@
         </div>
       </div>
     </div>
+
+    <!-- QR Code Modal -->
+    <div class="modal" id="qrModal">
+      <div class="modal-backdrop" id="qrModalBackdrop"></div>
+      <div class="modal-content" style="max-width: 360px; text-align: center;">
+        <div class="modal-header">
+          <h3>Bağlantı QR Kodu</h3>
+          <button class="modal-close" id="qrModalCloseBtn">✕</button>
+        </div>
+        <div class="modal-body" style="flex-direction: column; align-items: center; gap: 14px;">
+          <img id="qrImage" src="" alt="AirMesh QR" style="width: 210px; height: 210px; border-radius: 12px; border: 6px solid #fff; box-shadow: 0 4px 16px rgba(0,0,0,0.25);">
+          <p style="font-size: 13px; color: var(--text-muted); line-height: 1.4;">Diğer telefon veya tabletlerin kamerasından okutarak odaya doğrudan katılmalarını sağlayabilirsiniz.</p>
+          <code id="qrUrlText" style="font-size: 12px; padding: 6px 12px; background: rgba(255,255,255,0.06); border: 1px solid var(--surface-border); border-radius: 6px; word-break: break-all;"></code>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div class="toast-container" id="toastContainer"></div>
 
   </div>
 
