@@ -144,6 +144,12 @@ function initTabs() {
     window.location.href = '/api/zip';
   });
   fileSearch?.addEventListener('input', filterFiles);
+
+  document.addEventListener('click', () => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }, { once: true });
 }
 
 // QR Code Modal
@@ -215,6 +221,15 @@ function handleWsMessage(msg) {
       break;
     case 'file_uploaded':
       showToast(`📥 <b>${escapeHtml(msg.uploader)}</b> yeni bir dosya yükledi: <i>${escapeHtml(msg.fileName)}</i>`, 'success');
+      playNotificationSound();
+      if ('Notification' in window && Notification.permission === 'granted') {
+        try {
+          new Notification('AirMesh - Yeni Dosya', {
+            body: `${msg.uploader}: ${msg.fileName}`,
+            icon: '/icon-192.png'
+          });
+        } catch (e) {}
+      }
       break;
     case 'file_list_updated':
       loadFiles();
@@ -704,6 +719,29 @@ function sendChatMessage() {
   chatInput.value = '';
 }
 
+function formatChatText(text) {
+  const escaped = escapeHtml(text);
+  const urlRegex = /(https?:\/\/[^\s<]+)/g;
+  return escaped.replace(urlRegex, url => `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-color); text-decoration:underline; word-break:break-all;">${url}</a>`);
+}
+
+function playNotificationSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.3);
+  } catch (e) {}
+}
+
 function appendChatMessage(sender, text, isSelf) {
   const msgDiv = document.createElement('div');
   msgDiv.className = `chat-msg ${isSelf ? 'self' : ''}`;
@@ -712,20 +750,41 @@ function appendChatMessage(sender, text, isSelf) {
       <span>${escapeHtml(sender)}</span>
       <span>${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
     </div>
-    <div class="chat-msg-body">${escapeHtml(text)}</div>
+    <div class="chat-msg-body">${formatChatText(text)}</div>
     <button class="chat-copy-btn" onclick="copyToClipboard('${escapeJs(text)}')">📋 Kopyala</button>
   `;
   chatMessages.appendChild(msgDiv);
   chatMessages.scrollTop = chatMessages.scrollHeight;
+  if (!isSelf) playNotificationSound();
 }
 
 window.copyToClipboard = function(text) {
-  navigator.clipboard.writeText(text).then(() => {
-    alert('Metin panoya kopyalandı!');
-  }).catch(() => {
-    prompt('Metni kopyalayın:', text);
-  });
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('📋 Metin panoya kopyalandı!', 'info');
+    }).catch(() => {
+      fallbackCopy(text);
+    });
+  } else {
+    fallbackCopy(text);
+  }
 };
+
+function fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    showToast('📋 Metin panoya kopyalandı!', 'info');
+  } catch (e) {
+    prompt('Metni kopyalayın:', text);
+  }
+  document.body.removeChild(ta);
+}
 
 // Sync Play
 function initSyncPlay() {
