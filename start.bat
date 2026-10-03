@@ -17,6 +17,8 @@ if not exist "%USERPROFILE%\go_sdk\go\bin\go.exe" (
     )
 )
 
+taskkill /F /IM airmesh.exe >nul 2>&1
+
 echo [1/2] AirMesh derleniyor...
 go build -o airmesh.exe main.go
 if %errorlevel% neq 0 (
