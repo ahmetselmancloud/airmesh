@@ -43,6 +43,10 @@
         <span class="tab-icon">🎵</span>
         <span>Sync Play</span>
       </button>
+      <button class="tab-btn" data-tab="radar">
+        <span class="tab-icon">📡</span>
+        <span>Ağ & Radar</span>
+      </button>
     </nav>
 
     <!-- Main Content Panes -->
@@ -123,6 +127,53 @@
             </div>
           </div>
         </div>
+      <!-- RADAR & NETWORK TAB -->
+      <section id="tab-radar" class="tab-pane">
+        <!-- Hotspot Status Card -->
+        <div class="radar-card" id="hotspotCard">
+          <div class="radar-card-header">
+            <div class="radar-title">
+              <span class="radar-icon">📶</span>
+              <div>
+                <h3>Windows Mobil Etkin Nokta (Hotspot)</h3>
+                <span class="sub-badge" id="hotspotStatusBadge">Yükleniyor...</span>
+              </div>
+            </div>
+            <button class="action-btn-sm" id="toggleHotspotBtn">Aç / Kapat</button>
+          </div>
+          <div class="hotspot-details-grid">
+            <div class="detail-item">
+              <span class="detail-label">Ağ Adı (SSID)</span>
+              <strong id="hotspotSsidVal">-</strong>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Wi-Fi Parolası</span>
+              <strong id="hotspotPassVal">-</strong>
+            </div>
+          </div>
+          <div style="margin-top: 14px; display: flex; gap: 10px;">
+            <button class="btn-primary" id="showWifiQrBtn" style="padding: 8px 16px; font-size: 13px;">📷 Wi-Fi Katılım QR Kodu</button>
+          </div>
+        </div>
+
+        <!-- Connected Devices Radar -->
+        <div class="radar-card" style="margin-top: 16px;">
+          <div class="radar-card-header">
+            <div class="radar-title">
+              <span class="radar-icon">📡</span>
+              <div>
+                <h3>Bağlı Cihazlar Radarı</h3>
+                <span class="sub-badge" id="radarDeviceCountBadge">0 Cihaz Aktif</span>
+              </div>
+            </div>
+            <button class="action-btn-sm" id="refreshRadarBtn">🔄 Yenile</button>
+          </div>
+          <div class="connected-devices-list" id="connectedDevicesList">
+            <div class="empty-state" style="padding: 24px;">
+              <p>Şu anda odaya bağlı başka bir alıcı cihaz yok.</p>
+            </div>
+          </div>
+        </div>
       </section>
 
     </main>
@@ -153,6 +204,22 @@
           <img id="qrImage" src="" alt="AirMesh QR" style="width: 210px; height: 210px; border-radius: 12px; border: 6px solid #fff; box-shadow: 0 4px 16px rgba(0,0,0,0.25);">
           <p style="font-size: 13px; color: var(--text-muted); line-height: 1.4;">Diğer telefon veya tabletlerin kamerasından okutarak odaya doğrudan katılmalarını sağlayabilirsiniz.</p>
           <code id="qrUrlText" style="font-size: 12px; padding: 6px 12px; background: rgba(255,255,255,0.06); border: 1px solid var(--surface-border); border-radius: 6px; word-break: break-all;"></code>
+        </div>
+      </div>
+    </div>
+
+    <!-- Wi-Fi QR Code Modal -->
+    <div class="modal" id="wifiQrModal">
+      <div class="modal-backdrop" id="wifiQrModalBackdrop"></div>
+      <div class="modal-content" style="max-width: 360px; text-align: center;">
+        <div class="modal-header">
+          <h3>Wi-Fi Otomatik Bağlantı QR</h3>
+          <button class="modal-close" id="wifiQrModalCloseBtn">✕</button>
+        </div>
+        <div class="modal-body" style="flex-direction: column; align-items: center; gap: 14px;">
+          <img id="wifiQrImage" src="" alt="Wi-Fi QR" style="width: 210px; height: 210px; border-radius: 12px; border: 6px solid #fff; box-shadow: 0 4px 16px rgba(0,0,0,0.25);">
+          <p style="font-size: 13px; color: var(--text-muted); line-height: 1.4;">Telefon kamerasından okutarak Wi-Fi ağına şifre girmeden otomatik bağlanabilirsiniz.</p>
+          <div style="font-size: 13px; color: var(--text-main);"><b id="wifiQrSsidText"></b></div>
         </div>
       </div>
     </div>

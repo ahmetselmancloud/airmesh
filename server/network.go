@@ -53,20 +53,33 @@ func GetLocalIPs() ([]string, error) {
 	return ips, nil
 }
 
-// PrintBanner prints a clean terminal banner and ASCII QR code for the host
-func PrintBanner(ips []string, port int, sharedDir string, captiveEnabled bool) {
+// PrintBanner prints a clean terminal banner and ASCII QR codes for the host
+func PrintBanner(ips []string, port int, sharedDir string, captiveEnabled bool, hotspotCfg *HotspotConfig) {
 	fmt.Println("==================================================================")
 	fmt.Println("   ⚡ AirMesh — Yüksek Hızlı Yerel Dosya & Medya Ekosistemi ⚡   ")
 	fmt.Println("==================================================================")
 	fmt.Printf("📂 Paylaşılan Klasör: %s\n", sharedDir)
-	fmt.Printf("🌐 Port: %d\n", port)
+	fmt.Printf("🌐 Port: %d (TCP_NODELAY & 4MB Buffers Aktif)\n", port)
 	if captiveEnabled {
 		fmt.Println("📡 Captive Portal DNS: Aktif (UDP :53)")
 	} else {
 		fmt.Println("📡 Captive Portal DNS: Devre Dışı (Standart mod)")
 	}
+
+	if hotspotCfg != nil && hotspotCfg.SSID != "" {
+		fmt.Println("------------------------------------------------------------------")
+		fmt.Printf("📶 Windows Mobil Etkin Nokta (Hotspot): %s [Durum: %s]\n", hotspotCfg.SSID, hotspotCfg.State)
+		fmt.Printf("🔑 Hotspot Parolası: %s\n", hotspotCfg.Passphrase)
+		wifiQR := GetWifiQRContent(hotspotCfg.SSID, hotspotCfg.Passphrase)
+		qWifi, err := qrcode.New(wifiQR, qrcode.Medium)
+		if err == nil {
+			fmt.Println("📷 Telefonla Wi-Fi'a Şifresiz Katılmak İçin Okutun:")
+			fmt.Println(qWifi.ToSmallString(true))
+		}
+	}
+
 	fmt.Println("------------------------------------------------------------------")
-	fmt.Println("📱 Alıcı Cihazlar İçin Doğrudan Bağlantı Adresleri:")
+	fmt.Println("📱 Alıcı Cihazlar İçin Doğrudan Web Bağlantı Adresleri:")
 	
 	var primaryURL string
 	for i, ip := range ips {
@@ -79,16 +92,14 @@ func PrintBanner(ips []string, port int, sharedDir string, captiveEnabled bool) 
 
 	if primaryURL != "" {
 		fmt.Println("------------------------------------------------------------------")
-		fmt.Println("📷 Telefon Kamerasıyla Anında Bağlanmak İçin QR Kod:")
+		fmt.Println("📷 Web Arayüzünü Açmak İçin QR Kod:")
 		q, err := qrcode.New(primaryURL, qrcode.Medium)
 		if err == nil {
-			// Invert color is usually true on dark terminal backgrounds
 			fmt.Println(q.ToSmallString(true))
 		}
 	}
 
 	fmt.Println("------------------------------------------------------------------")
-	fmt.Println("💡 Telefonunuzu aynı Wi-Fi ağına veya PC'nin Hotspot'una bağlayıp")
-	fmt.Println("   kameranızla yukarıdaki QR kodu okutmanız yeterlidir!")
+	fmt.Println("💡 Telefonunuzu aynı Wi-Fi/Hotspot ağına bağlayıp web arayüzünü açın.")
 	fmt.Println("==================================================================")
 }

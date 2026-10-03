@@ -48,6 +48,21 @@ const qrUrlText = document.getElementById('qrUrlText');
 const downloadAllZipBtn = document.getElementById('downloadAllZipBtn');
 const toastContainer = document.getElementById('toastContainer');
 
+// Radar & Hotspot DOM Elements
+const hotspotStatusBadge = document.getElementById('hotspotStatusBadge');
+const hotspotSsidVal = document.getElementById('hotspotSsidVal');
+const hotspotPassVal = document.getElementById('hotspotPassVal');
+const toggleHotspotBtn = document.getElementById('toggleHotspotBtn');
+const showWifiQrBtn = document.getElementById('showWifiQrBtn');
+const wifiQrModal = document.getElementById('wifiQrModal');
+const wifiQrModalCloseBtn = document.getElementById('wifiQrModalCloseBtn');
+const wifiQrModalBackdrop = document.getElementById('wifiQrModalBackdrop');
+const wifiQrImage = document.getElementById('wifiQrImage');
+const wifiQrSsidText = document.getElementById('wifiQrSsidText');
+const radarDeviceCountBadge = document.getElementById('radarDeviceCountBadge');
+const connectedDevicesList = document.getElementById('connectedDevicesList');
+const refreshRadarBtn = document.getElementById('refreshRadarBtn');
+
 // Toast Notification System
 function showToast(message, type = 'info') {
   if (!toastContainer) return;
@@ -65,6 +80,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initTabs();
   initTheme();
   initQrModal();
+  initWifiQrModal();
+  initRadar();
   initWebSocket();
   loadFiles();
   initUploadHandlers();
@@ -82,6 +99,10 @@ function initTabs() {
       const tabId = 'tab-' + btn.getAttribute('data-tab');
       const targetPane = document.getElementById(tabId);
       if (targetPane) targetPane.classList.add('active');
+      if (btn.getAttribute('data-tab') === 'radar') {
+        loadHotspotInfo();
+        loadRadarDevices();
+      }
     });
   });
 
@@ -150,6 +171,12 @@ function handleWsMessage(msg) {
     case 'device_count':
       deviceCountChip.textContent = `👥 ${msg.count} Cihaz`;
       break;
+    case 'device_list_updated':
+      state.devices = msg.devices || [];
+      renderConnectedDevices(state.devices);
+      deviceCountChip.textContent = `👥 ${msg.count} Cihaz`;
+      if (radarDeviceCountBadge) radarDeviceCountBadge.textContent = `${msg.count} Cihaz Aktif`;
+      break;
     case 'chat':
       appendChatMessage(msg.sender, msg.text, msg.senderId === state.deviceId);
       break;
@@ -214,6 +241,7 @@ function renderFiles(files) {
           ${isAudio ? `<button class="btn-icon-action" onclick="syncPlayAudio('${encodeURIComponent(file.name)}')">📻 Odada Çal</button>` : ''}
           ${isMedia ? `<button class="btn-icon-action" onclick="streamMedia('${encodeURIComponent(file.name)}', '${isVideo ? 'video' : 'audio'}')">▶️ İzle</button>` : ''}
           <a class="btn-icon-action" href="/api/download?file=${encodeURIComponent(file.name)}" download="${escapeHtml(file.name)}">⬇️ İndir</a>
+          <button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodeURIComponent(file.name)}')">🗑️</button>
         </div>
       </div>
     `;
@@ -557,4 +585,120 @@ function escapeHtml(str) {
 function escapeJs(str) {
   if (!str) return '';
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+// File Deletion
+window.deleteFile = async function(encodedName) {
+  const fileName = decodeURIComponent(encodedName);
+  if (!confirm(`"${fileName}" dosyasını silmek istediğinize emin misiniz?`)) return;
+  try {
+    const res = await fetch(`/api/delete?file=${encodedName}`, { method: 'POST' });
+    if (res.ok) {
+      showToast(`🗑️ "${fileName}" silindi`, 'info');
+      loadFiles();
+    } else {
+      showToast('Hata: Dosya silinemedi', 'error');
+    }
+  } catch (e) {
+    showToast('Bağlantı hatası', 'error');
+  }
+};
+
+// Radar & Hotspot Management
+function initRadar() {
+  refreshRadarBtn?.addEventListener('click', loadRadarDevices);
+  toggleHotspotBtn?.addEventListener('click', toggleHotspot);
+  loadHotspotInfo();
+  loadRadarDevices();
+}
+
+async function loadHotspotInfo() {
+  try {
+    const res = await fetch('/api/hotspot');
+    if (!res.ok) return;
+    const data = await res.json();
+    state.hotspot = data;
+    if (hotspotSsidVal) hotspotSsidVal.textContent = data.ssid || 'Bilinmiyor';
+    if (hotspotPassVal) hotspotPassVal.textContent = data.passphrase || 'Bilinmiyor';
+    if (hotspotStatusBadge) {
+      hotspotStatusBadge.textContent = data.state === 'On' ? 'Aktif (Açık)' : 'Kapalı';
+      hotspotStatusBadge.style.color = data.state === 'On' ? '#10b981' : '#ef4444';
+    }
+  } catch (e) {
+    console.error('Hotspot bilgisi alınamadı:', e);
+  }
+}
+
+async function toggleHotspot() {
+  if (!state.hotspot) return;
+  const nextAction = state.hotspot.state === 'On' ? 'stop' : 'start';
+  showToast(`⚡ Hotspot ${nextAction === 'start' ? 'açılıyor...' : 'kapatılıyor...'}`, 'info');
+  try {
+    const res = await fetch(`/api/hotspot?action=${nextAction}`, { method: 'POST' });
+    if (res.ok) {
+      setTimeout(loadHotspotInfo, 1200);
+    }
+  } catch (e) {
+    showToast('Hotspot işleminde hata oluştu', 'error');
+  }
+}
+
+function initWifiQrModal() {
+  showWifiQrBtn?.addEventListener('click', () => {
+    wifiQrImage.src = '/api/hotspot/qr?' + Date.now();
+    if (wifiQrSsidText && state.hotspot) {
+      wifiQrSsidText.textContent = `Ağ: ${state.hotspot.ssid} | Şifre: ${state.hotspot.passphrase}`;
+    }
+    wifiQrModal.classList.add('active');
+  });
+
+  wifiQrModalCloseBtn?.addEventListener('click', () => wifiQrModal.classList.remove('active'));
+  wifiQrModalBackdrop?.addEventListener('click', () => wifiQrModal.classList.remove('active'));
+}
+
+async function loadRadarDevices() {
+  try {
+    const res = await fetch('/api/radar');
+    if (!res.ok) return;
+    const list = await res.json();
+    state.devices = list || [];
+    renderConnectedDevices(state.devices);
+  } catch (e) {
+    console.error('Radar cihazları alınamadı:', e);
+  }
+}
+
+function renderConnectedDevices(devices) {
+  if (!connectedDevicesList) return;
+  if (!devices || devices.length === 0) {
+    connectedDevicesList.innerHTML = `
+      <div class="empty-state" style="padding: 24px;">
+        <p>Şu anda odaya bağlı başka bir alıcı cihaz yok.</p>
+      </div>`;
+    return;
+  }
+
+  connectedDevicesList.innerHTML = devices.map(dev => {
+    let icon = '📱';
+    const ua = dev.userAgent || '';
+    if (/Windows/i.test(ua)) icon = '💻';
+    else if (/Mac/i.test(ua)) icon = '🍏';
+    else if (/Android/i.test(ua)) icon = '🤖';
+    else if (/iPhone|iPad/i.test(ua)) icon = '📱';
+
+    const isSelf = dev.id === state.deviceId;
+
+    return `
+      <div class="device-card">
+        <div class="device-main-info">
+          <div class="device-icon-badge">${icon}</div>
+          <div>
+            <div class="device-name-text">${escapeHtml(dev.name)} ${isSelf ? '<span class="sub-badge" style="font-size: 10px;">Sen</span>' : ''}</div>
+            <div class="device-ip-text">IP: ${escapeHtml(dev.ip)} • Giriş: ${dev.connectedAt}</div>
+          </div>
+        </div>
+        <div class="chip" style="font-size: 11px; color: var(--accent-color);">🟢 Çevrimiçi</div>
+      </div>
+    `;
+  }).join('');
 }

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/skip2/go-qrcode"
 )
@@ -27,6 +28,14 @@ type FileItem struct {
 	Size    int64  `json:"size"`
 	ModTime string `json:"modTime"`
 	IsDir   bool   `json:"isDir"`
+}
+
+type DeviceInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	IP          string `json:"ip"`
+	UserAgent   string `json:"userAgent"`
+	ConnectedAt string `json:"connectedAt"`
 }
 
 type Server struct {
@@ -66,6 +75,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/upload", s.handleUpload)
 	mux.HandleFunc("/api/zip", s.handleZipStream)
 	mux.HandleFunc("/api/qr", s.handleQR)
+	mux.HandleFunc("/api/radar", s.handleRadar)
+	mux.HandleFunc("/api/hotspot", s.handleHotspot)
+	mux.HandleFunc("/api/hotspot/qr", s.handleHotspotQR)
+	mux.HandleFunc("/api/delete", s.handleDelete)
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
 	// Static web assets from embedded filesystem
@@ -330,18 +343,94 @@ func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(png)
 }
 
+func (s *Server) handleRadar(w http.ResponseWriter, r *http.Request) {
+	devices := s.hub.getConnectedDevices()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(devices)
+}
+
+func (s *Server) handleHotspot(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		action := r.URL.Query().Get("action")
+		if action == "start" {
+			_ = ToggleHotspot(true)
+		} else if action == "stop" {
+			_ = ToggleHotspot(false)
+		}
+	}
+
+	cfg, err := GetHotspotConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(cfg)
+}
+
+func (s *Server) handleHotspotQR(w http.ResponseWriter, r *http.Request) {
+	cfg, err := GetHotspotConfig()
+	if err != nil || cfg.SSID == "" {
+		http.Error(w, "Hotspot bilgisi alınamadı", http.StatusInternalServerError)
+		return
+	}
+
+	wifiQR := GetWifiQRContent(cfg.SSID, cfg.Passphrase)
+	png, err := qrcode.Encode(wifiQR, qrcode.Medium, 256)
+	if err != nil {
+		http.Error(w, "Wi-Fi QR oluşturulamadı", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(png)
+}
+
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Yalnızca POST desteklenir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileName := r.URL.Query().Get("file")
+	if fileName == "" {
+		http.Error(w, "Dosya adı belirtilmedi", http.StatusBadRequest)
+		return
+	}
+
+	fullPath, err := s.getSafeFilePath(fileName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := os.Remove(fullPath); err != nil {
+		http.Error(w, fmt.Sprintf("Dosya silinemedi: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"deleted"}`))
+}
+
 // Pure Go RFC6455 WebSocket Implementation
 type WSClient struct {
-	conn net.Conn
-	hub  *WSHub
-	id   string
-	name string
+	conn        net.Conn
+	hub         *WSHub
+	id          string
+	name        string
+	ip          string
+	userAgent   string
+	connectedAt time.Time
 }
 
 type WSHub struct {
 	mu          sync.Mutex
 	clients     map[*WSClient]bool
 	lastSyncMsg []byte
+	emptyTimer  *time.Timer
 }
 
 func newWSHub() *WSHub {
@@ -350,27 +439,67 @@ func newWSHub() *WSHub {
 	}
 }
 
+func (h *WSHub) getConnectedDevices() []DeviceInfo {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	var list []DeviceInfo
+	for c := range h.clients {
+		list = append(list, DeviceInfo{
+			ID:          c.id,
+			Name:        c.name,
+			IP:          c.ip,
+			UserAgent:   c.userAgent,
+			ConnectedAt: c.connectedAt.Format("15:04:05"),
+		})
+	}
+	return list
+}
+
 func (h *WSHub) register(c *WSClient) {
 	h.mu.Lock()
 	h.clients[c] = true
 	count := len(h.clients)
 	lastSync := h.lastSyncMsg
+	if h.emptyTimer != nil {
+		h.emptyTimer.Stop()
+		h.emptyTimer = nil
+	}
 	h.mu.Unlock()
 
-	h.broadcast([]byte(fmt.Sprintf(`{"type":"device_count","count":%d}`, count)))
+	h.broadcastDeviceList()
 	if len(lastSync) > 0 {
 		frame := encodeWSTextFrame(lastSync)
 		_, _ = c.conn.Write(frame)
 	}
+	_ = count
 }
 
 func (h *WSHub) unregister(c *WSClient) {
 	h.mu.Lock()
 	delete(h.clients, c)
 	count := len(h.clients)
+	if count == 0 {
+		if h.emptyTimer != nil {
+			h.emptyTimer.Stop()
+		}
+		h.emptyTimer = time.AfterFunc(5*time.Minute, func() {
+			fmt.Println("\n💤 [Akıllı Güç Tasarrufu] 5 dakikadır bağlı alıcı cihaz bulunamadı. Bekleme modunda.")
+		})
+	}
 	h.mu.Unlock()
 
-	h.broadcast([]byte(fmt.Sprintf(`{"type":"device_count","count":%d}`, count)))
+	h.broadcastDeviceList()
+}
+
+func (h *WSHub) broadcastDeviceList() {
+	devices := h.getConnectedDevices()
+	payload, _ := json.Marshal(map[string]interface{}{
+		"type":    "device_list_updated",
+		"devices": devices,
+		"count":   len(devices),
+	})
+	h.broadcast(payload)
 }
 
 func (h *WSHub) broadcast(msg []byte) {
@@ -418,11 +547,19 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	_, _ = bufrw.WriteString(res)
 	_ = bufrw.Flush()
 
+	clientIP := r.RemoteAddr
+	if colonIdx := strings.LastIndex(clientIP, ":"); colonIdx != -1 {
+		clientIP = clientIP[:colonIdx]
+	}
+
 	client := &WSClient{
-		conn: conn,
-		hub:  s.hub,
-		id:   r.URL.Query().Get("id"),
-		name: r.URL.Query().Get("name"),
+		conn:        conn,
+		hub:         s.hub,
+		id:          r.URL.Query().Get("id"),
+		name:        r.URL.Query().Get("name"),
+		ip:          clientIP,
+		userAgent:   r.UserAgent(),
+		connectedAt: time.Now(),
 	}
 
 	s.hub.register(client)

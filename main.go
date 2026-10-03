@@ -59,14 +59,21 @@ func main() {
 		}
 	}
 
-	// Print beautiful terminal banner
-	server.PrintBanner(localIPs, *portFlag, sharedDir, dnsServer != nil)
+	// Query Windows Mobile Hotspot config
+	hotspotCfg, _ := server.GetHotspotConfig()
 
-	// Create and start HTTP server
+	// Print beautiful terminal banner
+	server.PrintBanner(localIPs, *portFlag, sharedDir, dnsServer != nil, hotspotCfg)
+
+	// Create and start HTTP server with 4MB TCP socket buffers and TCP_NODELAY
 	srv := server.NewServer(sharedDir, webSubFS)
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf("0.0.0.0:%d", *portFlag),
 		Handler: srv.Routes(),
+	}
+
+	listener, err := server.NewOptimizedListener(fmt.Sprintf("0.0.0.0:%d", *portFlag), 4*1024*1024)
+	if err != nil {
+		log.Fatalf("Soket dinlenemedi: %v", err)
 	}
 
 	// Graceful shutdown handling
@@ -80,10 +87,11 @@ func main() {
 			dnsServer.Stop()
 		}
 		_ = httpServer.Close()
+		_ = listener.Close()
 		os.Exit(0)
 	}()
 
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("HTTP sunucu hatası: %v", err)
 	}
 }
