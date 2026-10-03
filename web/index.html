@@ -6,6 +6,11 @@
   <title>AirMesh — Yerel Paylaşım & Medya</title>
   <link rel="stylesheet" href="style.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0b0f19">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AirMesh">
 </head>
 <body>
   <div class="app-container">
@@ -171,6 +176,42 @@
           <div class="connected-devices-list" id="connectedDevicesList">
             <div class="empty-state" style="padding: 24px;">
               <p>Şu anda odaya bağlı başka bir alıcı cihaz yok.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Wi-Fi Speed Benchmark Card -->
+        <div class="radar-card" style="margin-top: 16px;">
+          <div class="radar-card-header">
+            <div class="radar-title">
+              <span class="radar-icon">⚡</span>
+              <div>
+                <h3>Wi-Fi Ağ Hız Testi (Benchmark)</h3>
+                <span class="sub-badge" id="speedTestStatusBadge">Hazır</span>
+              </div>
+            </div>
+            <button class="btn-primary" id="startSpeedTestBtn" style="padding: 6px 16px; font-size: 13px;">🚀 Testi Başlat</button>
+          </div>
+          
+          <div class="speedtest-display">
+            <div class="speed-gauge">
+              <div class="speed-val" id="speedValText">0.0</div>
+              <div class="speed-unit">MB/s</div>
+              <div class="speed-sub" id="speedMbpsText">0 Mbps</div>
+            </div>
+            <div class="speedtest-metrics-grid">
+              <div class="metric-box">
+                <span class="detail-label">Gecikme (Ping)</span>
+                <strong id="pingResultVal">-- ms</strong>
+              </div>
+              <div class="metric-box">
+                <span class="detail-label">İndirme Hızı</span>
+                <strong id="downResultVal" style="color: var(--accent-color);">-- MB/s</strong>
+              </div>
+              <div class="metric-box">
+                <span class="detail-label">Yükleme Hızı</span>
+                <strong id="upResultVal" style="color: var(--primary-color);">-- MB/s</strong>
+              </div>
             </div>
           </div>
         </div>

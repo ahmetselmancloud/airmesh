@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/hotspot", s.handleHotspot)
 	mux.HandleFunc("/api/hotspot/qr", s.handleHotspotQR)
 	mux.HandleFunc("/api/delete", s.handleDelete)
+	mux.HandleFunc("/api/speedtest/ping", s.handleSpeedtestPing)
+	mux.HandleFunc("/api/speedtest/download", s.handleSpeedtestDownload)
+	mux.HandleFunc("/api/speedtest/upload", s.handleSpeedtestUpload)
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
 	// Static web assets from embedded filesystem
@@ -413,6 +417,62 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"deleted"}`))
+}
+
+func (s *Server) handleSpeedtestPing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write([]byte("pong"))
+}
+
+func (s *Server) handleSpeedtestDownload(w http.ResponseWriter, r *http.Request) {
+	sizeMB := 30
+	if sStr := r.URL.Query().Get("size"); sStr != "" {
+		if val, err := strconv.Atoi(sStr); err == nil && val > 0 && val <= 200 {
+			sizeMB = val
+		}
+	}
+	totalBytes := int64(sizeMB) * 1024 * 1024
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(totalBytes, 10))
+
+	chunk := make([]byte, 64*1024) // 64KB dummy buffer
+	var written int64
+	for written < totalBytes {
+		toWrite := int64(len(chunk))
+		if totalBytes-written < toWrite {
+			toWrite = totalBytes - written
+		}
+		n, err := w.Write(chunk[:toWrite])
+		if err != nil {
+			return
+		}
+		written += int64(n)
+	}
+}
+
+func (s *Server) handleSpeedtestUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Yalnızca POST desteklenir", http.StatusMethodNotAllowed)
+		return
+	}
+	start := time.Now()
+	written, err := io.Copy(io.Discard, r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	elapsed := time.Since(start).Seconds()
+	if elapsed <= 0 {
+		elapsed = 0.001
+	}
+	speedMBs := (float64(written) / (1024 * 1024)) / elapsed
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"bytes":    written,
+		"seconds":  elapsed,
+		"speedMBs": speedMBs,
+	})
 }
 
 // Pure Go RFC6455 WebSocket Implementation

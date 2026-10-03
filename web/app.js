@@ -63,6 +63,16 @@ const radarDeviceCountBadge = document.getElementById('radarDeviceCountBadge');
 const connectedDevicesList = document.getElementById('connectedDevicesList');
 const refreshRadarBtn = document.getElementById('refreshRadarBtn');
 
+// Speedtest DOM Elements
+const startSpeedTestBtn = document.getElementById('startSpeedTestBtn');
+const speedTestStatusBadge = document.getElementById('speedTestStatusBadge');
+const speedValText = document.getElementById('speedValText');
+const speedMbpsText = document.getElementById('speedMbpsText');
+const pingResultVal = document.getElementById('pingResultVal');
+const downResultVal = document.getElementById('downResultVal');
+const upResultVal = document.getElementById('upResultVal');
+const speedGauge = document.querySelector('.speed-gauge');
+
 // Toast Notification System
 function showToast(message, type = 'info') {
   if (!toastContainer) return;
@@ -82,6 +92,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initQrModal();
   initWifiQrModal();
   initRadar();
+  initSpeedTest();
+  initPWA();
   initWebSocket();
   loadFiles();
   initUploadHandlers();
@@ -701,4 +713,110 @@ function renderConnectedDevices(devices) {
       </div>
     `;
   }).join('');
+}
+
+// PWA Support
+function initPWA() {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(err => {
+      console.log('ServiceWorker registration error:', err);
+    });
+  }
+}
+
+// Wi-Fi Speed Benchmark Test
+function initSpeedTest() {
+  startSpeedTestBtn?.addEventListener('click', runSpeedBenchmark);
+}
+
+let isSpeedTesting = false;
+async function runSpeedBenchmark() {
+  if (isSpeedTesting) return;
+  isSpeedTesting = true;
+  startSpeedTestBtn.disabled = true;
+  speedGauge?.classList.add('running');
+  speedTestStatusBadge.textContent = 'Ping Ölçülüyor...';
+  speedTestStatusBadge.style.color = '#3b82f6';
+  pingResultVal.textContent = '-- ms';
+  downResultVal.textContent = '-- MB/s';
+  upResultVal.textContent = '-- MB/s';
+
+  try {
+    // Step 1: Ping Test (3 samples)
+    let totalPing = 0;
+    for (let i = 0; i < 3; i++) {
+      const pStart = performance.now();
+      await fetch('/api/speedtest/ping?' + Math.random());
+      totalPing += (performance.now() - pStart);
+    }
+    const avgPing = Math.round(totalPing / 3);
+    pingResultVal.textContent = `${avgPing} ms`;
+
+    // Step 2: Download Test (Streams 30MB)
+    speedTestStatusBadge.textContent = 'İndirme Test Ediliyor...';
+    speedTestStatusBadge.style.color = 'var(--accent-color)';
+    const dStart = performance.now();
+    const dRes = await fetch('/api/speedtest/download?size=30');
+    const reader = dRes.body.getReader();
+    let bytesReceived = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytesReceived += value.length;
+      const elapsed = (performance.now() - dStart) / 1000;
+      if (elapsed > 0) {
+        const currentMBs = (bytesReceived / (1024 * 1024)) / elapsed;
+        speedValText.textContent = currentMBs.toFixed(1);
+        speedMbpsText.textContent = `${Math.round(currentMBs * 8)} Mbps`;
+      }
+    }
+    const dElapsed = (performance.now() - dStart) / 1000;
+    const finalDownMBs = (bytesReceived / (1024 * 1024)) / dElapsed;
+    downResultVal.textContent = `${finalDownMBs.toFixed(1)} MB/s`;
+
+    // Step 3: Upload Test (10MB payload)
+    speedTestStatusBadge.textContent = 'Yükleme Test Ediliyor...';
+    speedTestStatusBadge.style.color = 'var(--primary-color)';
+    const uploadData = new Uint8Array(10 * 1024 * 1024); // 10MB dummy buffer
+
+    const uStart = performance.now();
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/speedtest/upload', true);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const uElapsed = (performance.now() - uStart) / 1000;
+          if (uElapsed > 0) {
+            const currentUpMBs = (e.loaded / (1024 * 1024)) / uElapsed;
+            speedValText.textContent = currentUpMBs.toFixed(1);
+            speedMbpsText.textContent = `${Math.round(currentUpMBs * 8)} Mbps`;
+          }
+        }
+      };
+      xhr.onload = () => resolve(xhr.response);
+      xhr.onerror = () => reject(new Error('Yükleme hatası'));
+      xhr.send(uploadData);
+    });
+
+    const uElapsed = (performance.now() - uStart) / 1000;
+    const finalUpMBs = (uploadData.length / (1024 * 1024)) / uElapsed;
+    upResultVal.textContent = `${finalUpMBs.toFixed(1)} MB/s`;
+
+    // Completion
+    speedTestStatusBadge.textContent = 'Tamamlandı ✅';
+    speedTestStatusBadge.style.color = '#10b981';
+    speedValText.textContent = finalDownMBs.toFixed(1);
+    speedMbpsText.textContent = `${Math.round(finalDownMBs * 8)} Mbps`;
+    showToast(`⚡ Hız Testi Bitti: İndirme ${finalDownMBs.toFixed(1)} MB/s | Yükleme ${finalUpMBs.toFixed(1)} MB/s`, 'success');
+
+  } catch (err) {
+    speedTestStatusBadge.textContent = 'Hata ❌';
+    speedTestStatusBadge.style.color = '#ef4444';
+    showToast('Hız testi sırasında hata oluştu: ' + err.message, 'error');
+  } finally {
+    isSpeedTesting = false;
+    startSpeedTestBtn.disabled = false;
+    speedGauge?.classList.remove('running');
+  }
 }
