@@ -1,0 +1,16 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test or temp files
+shared/*
+!shared/Hosgeldiniz.txt
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

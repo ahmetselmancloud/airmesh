@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AirMesh — Yerel Paylaşım & Medya</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo-icon">⚡</div>
+        <div>
+          <h1>AirMesh</h1>
+          <span class="sub-badge" id="connStatus">Bağlanıyor...</span>
+        </div>
+      </div>
+      <div class="header-stats">
+        <span class="chip" id="deviceCountChip">👥 0 Cihaz</span>
+        <button id="themeToggle" class="icon-btn" title="Tema Değiştir">🌓</button>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="tab-btn active" data-tab="files">
+        <span class="tab-icon">📁</span>
+        <span>Dosyalar</span>
+      </button>
+      <button class="tab-btn" data-tab="upload">
+        <span class="tab-icon">📤</span>
+        <span>Gönder</span>
+      </button>
+      <button class="tab-btn" data-tab="chat">
+        <span class="tab-icon">💬</span>
+        <span>Sohbet & Pano</span>
+      </button>
+      <button class="tab-btn" data-tab="syncplay">
+        <span class="tab-icon">🎵</span>
+        <span>Sync Play</span>
+      </button>
+    </nav>
+
+    <!-- Main Content Panes -->
+    <main class="main-content">
+      
+      <!-- FILES TAB -->
+      <section id="tab-files" class="tab-pane active">
+        <div class="section-toolbar">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="fileSearch" placeholder="Dosyalarda ara...">
+          </div>
+          <button class="action-btn-sm" id="refreshFilesBtn" title="Listeyi Yenile">🔄 Yenile</button>
+        </div>
+
+        <div class="files-container" id="filesList">
+          <div class="empty-state">
+            <div class="empty-icon">📂</div>
+            <p>Paylaşılan dosya listesi yükleniyor...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- UPLOAD TAB -->
+      <section id="tab-upload" class="tab-pane">
+        <div class="upload-dropzone" id="dropzone">
+          <div class="drop-icon">🚀</div>
+          <h3>Dosyaları Buraya Sürükle & Bırak</h3>
+          <p>veya cihazından seçmek için tıkla</p>
+          <input type="file" id="fileInput" multiple style="display:none">
+          <button class="btn-primary" onclick="document.getElementById('fileInput').click()">Dosya Seç</button>
+          <div class="upload-hint">Sıfır internet kotası • Doğrudan diske streaming • Yüksek hız</div>
+        </div>
+
+        <!-- Active Uploads List -->
+        <div class="upload-progress-container" id="uploadList" style="display:none;">
+          <h3>Aktarım Durumu</h3>
+          <div id="uploadItems"></div>
+        </div>
+      </section>
+
+      <!-- CHAT & CLIPBOARD TAB -->
+      <section id="tab-chat" class="tab-pane">
+        <div class="chat-wrapper">
+          <div class="chat-messages" id="chatMessages">
+            <div class="chat-intro">
+              <p>💡 <b>Çevrimdışı Pano & Sohbet:</b> Buradan paylaştığınız metinler, şifreler veya notlar odadaki tüm cihazlarda anında görünür ve tek tıkla kopyalanabilir.</p>
+            </div>
+          </div>
+          <div class="chat-input-bar">
+            <input type="text" id="chatInput" placeholder="Mesaj veya panoya kopyalanacak metin..." autocomplete="off">
+            <button id="sendChatBtn" class="btn-primary">Gönder</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SYNC PLAY TAB -->
+      <section id="tab-syncplay" class="tab-pane">
+        <div class="syncplay-card">
+          <div class="disc-animation" id="musicDisc">
+            <span>🎵</span>
+          </div>
+          <h2 id="syncTrackTitle">Şu Anda Çalan Yok</h2>
+          <p id="syncTrackArtist" class="text-secondary">Oda yöneticisi veya herhangi bir alıcı şarkı seçebilir</p>
+          
+          <div class="syncplay-controls">
+            <audio id="syncAudioPlayer" preload="auto"></audio>
+            <div class="time-display">
+              <span id="currentTime">00:00</span>
+              <div class="progress-bar-wrap" id="audioProgressWrap">
+                <div class="progress-bar-fill" id="audioProgressFill"></div>
+              </div>
+              <span id="totalTime">00:00</span>
+            </div>
+            <div class="btn-group">
+              <button class="btn-circle" id="syncPlayBtn" title="Oynat / Duraklat">▶️</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <!-- Media Player Modal for Streaming Previews -->
+    <div class="modal" id="mediaModal">
+      <div class="modal-backdrop" id="modalBackdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 id="modalMediaTitle">Medya Önizleme</h3>
+          <button class="modal-close" id="modalCloseBtn">✕</button>
+        </div>
+        <div class="modal-body" id="modalMediaBody">
+          <!-- Video or Audio will be inserted here -->
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
