@@ -285,23 +285,42 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 // On-the-fly streaming zip without buffering entire archive on disk or in RAM
 func (s *Server) handleZipStream(w http.ResponseWriter, r *http.Request) {
-	entries, err := os.ReadDir(s.SharedDir)
-	if err != nil {
-		http.Error(w, "Klasör okunamadı", http.StatusInternalServerError)
-		return
+	filesQuery := r.URL.Query().Get("files")
+	var targetFiles []string
+	archiveName := "airmesh_tum_dosyalar.zip"
+
+	if filesQuery != "" {
+		archiveName = "airmesh_secilen_dosyalar.zip"
+		parts := strings.Split(filesQuery, ",")
+		for _, p := range parts {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				targetFiles = append(targetFiles, trimmed)
+			}
+		}
+	} else {
+		entries, err := os.ReadDir(s.SharedDir)
+		if err != nil {
+			http.Error(w, "Klasör okunamadı", http.StatusInternalServerError)
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				targetFiles = append(targetFiles, e.Name())
+			}
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"airmesh_tum_dosyalar.zip\"")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", archiveName))
 
 	zipWriter := zip.NewWriter(w)
 	defer zipWriter.Close()
 
-	for _, entry := range entries {
-		if entry.IsDir() {
+	for _, fileName := range targetFiles {
+		filePath, err := s.getSafeFilePath(fileName)
+		if err != nil {
 			continue
 		}
-		filePath := filepath.Join(s.SharedDir, entry.Name())
 		file, err := os.Open(filePath)
 		if err != nil {
 			continue
@@ -397,21 +416,25 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileName := r.URL.Query().Get("file")
-	if fileName == "" {
+	fileParam := r.URL.Query().Get("file")
+	if fileParam == "" {
+		fileParam = r.URL.Query().Get("files")
+	}
+	if fileParam == "" {
 		http.Error(w, "Dosya adı belirtilmedi", http.StatusBadRequest)
 		return
 	}
 
-	fullPath, err := s.getSafeFilePath(fileName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if err := os.Remove(fullPath); err != nil {
-		http.Error(w, fmt.Sprintf("Dosya silinemedi: %v", err), http.StatusInternalServerError)
-		return
+	targets := strings.Split(fileParam, ",")
+	for _, fn := range targets {
+		fn = strings.TrimSpace(fn)
+		if fn == "" {
+			continue
+		}
+		fullPath, err := s.getSafeFilePath(fn)
+		if err == nil {
+			_ = os.Remove(fullPath)
+		}
 	}
 
 	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))

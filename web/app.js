@@ -6,7 +6,10 @@ const state = {
   ws: null,
   files: [],
   activeUploads: {},
-  isPlayingSync: false
+  isPlayingSync: false,
+  viewMode: localStorage.getItem('airmesh_view_mode') || 'list',
+  batchMode: false,
+  selectedFiles: new Set()
 };
 
 function getRandomDeviceName() {
@@ -47,6 +50,22 @@ const qrImage = document.getElementById('qrImage');
 const qrUrlText = document.getElementById('qrUrlText');
 const downloadAllZipBtn = document.getElementById('downloadAllZipBtn');
 const toastContainer = document.getElementById('toastContainer');
+
+// Gallery, Batch & Lightbox DOM Elements
+const listViewBtn = document.getElementById('listViewBtn');
+const galleryViewBtn = document.getElementById('galleryViewBtn');
+const batchSelectModeBtn = document.getElementById('batchSelectModeBtn');
+const batchBar = document.getElementById('batchBar');
+const selectedCountText = document.getElementById('selectedCountText');
+const downloadSelectedZipBtn = document.getElementById('downloadSelectedZipBtn');
+const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+const cancelBatchBtn = document.getElementById('cancelBatchBtn');
+const lightboxModal = document.getElementById('lightboxModal');
+const lightboxBackdrop = document.getElementById('lightboxBackdrop');
+const lightboxCloseBtn = document.getElementById('lightboxCloseBtn');
+const lightboxImg = document.getElementById('lightboxImg');
+const lightboxTitle = document.getElementById('lightboxTitle');
+const lightboxDownloadBtn = document.getElementById('lightboxDownloadBtn');
 
 // Radar & Hotspot DOM Elements
 const hotspotStatusBadge = document.getElementById('hotspotStatusBadge');
@@ -95,6 +114,8 @@ document.addEventListener('DOMContentLoaded', () => {
   initSpeedTest();
   initPWA();
   initWebSocket();
+  initGalleryAndBatch();
+  initLightbox();
   loadFiles();
   initUploadHandlers();
   initChat();
@@ -224,8 +245,31 @@ async function loadFiles() {
   }
 }
 
+function isImageFile(name) {
+  return /\.(jpg|jpeg|png|webp|gif|bmp|svg|avif)$/i.test(name);
+}
+
+function isVideoFile(name) {
+  return /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(name);
+}
+
+function isAudioFile(name) {
+  return /\.(mp3|wav|ogg|flac|m4a|aac)$/i.test(name);
+}
+
+function getFilteredFiles() {
+  const query = fileSearch?.value?.toLowerCase().trim() || '';
+  if (!query) return state.files;
+  return state.files.filter(f => f.name.toLowerCase().includes(query));
+}
+
+function filterFiles() {
+  renderFiles(getFilteredFiles());
+}
+
 function renderFiles(files) {
   if (!files || files.length === 0) {
+    filesList.classList.remove('gallery-view');
     filesList.innerHTML = `
       <div class="empty-state">
         <div class="empty-icon">📭</div>
@@ -234,30 +278,232 @@ function renderFiles(files) {
     return;
   }
 
-  filesList.innerHTML = files.map(file => {
-    const isVideo = /\.(mp4|webm|mov|mkv)$/i.test(file.name);
-    const isAudio = /\.(mp3|wav|ogg|flac|m4a)$/i.test(file.name);
-    const isMedia = isVideo || isAudio;
-    const fileIcon = getFileIcon(file.name, file.isDir);
+  if (state.viewMode === 'gallery') {
+    filesList.classList.add('gallery-view');
+    filesList.innerHTML = files.map(file => {
+      const isImg = isImageFile(file.name);
+      const isVideo = isVideoFile(file.name);
+      const isAudio = isAudioFile(file.name);
+      const isMedia = isVideo || isAudio;
+      const isSelected = state.selectedFiles.has(file.name);
+      const encodedName = encodeURIComponent(file.name);
 
-    return `
-      <div class="file-item">
-        <div class="file-info">
-          <div class="file-icon">${fileIcon}</div>
-          <div class="file-details">
-            <div class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
-            <div class="file-meta">${formatBytes(file.size)} • ${file.modTime || ''}</div>
+      let thumbHtml = '';
+      if (isImg) {
+        thumbHtml = `
+          <div class="card-thumb-wrapper" onclick="openLightbox('${encodedName}')">
+            <img class="card-thumb-img" src="/api/stream?file=${encodedName}" alt="${escapeHtml(file.name)}" loading="lazy">
+            <span class="card-badge">Resim</span>
+          </div>`;
+      } else if (isVideo) {
+        thumbHtml = `
+          <div class="card-thumb-wrapper" onclick="streamMedia('${encodedName}', 'video')">
+            <div class="card-placeholder-icon">🎬</div>
+            <span class="card-badge">Video</span>
+          </div>`;
+      } else if (isAudio) {
+        thumbHtml = `
+          <div class="card-thumb-wrapper" onclick="streamMedia('${encodedName}', 'audio')">
+            <div class="card-placeholder-icon">🎵</div>
+            <span class="card-badge">Ses</span>
+          </div>`;
+      } else {
+        thumbHtml = `
+          <div class="card-thumb-wrapper">
+            <div class="card-placeholder-icon">${getFileIcon(file.name, file.isDir)}</div>
+          </div>`;
+      }
+
+      return `
+        <div class="file-card ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
+          <input type="checkbox" class="card-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelectFile('${encodedName}', this.checked)">
+          ${thumbHtml}
+          <div class="card-body">
+            <div class="card-title" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
+            <div class="card-meta">${formatBytes(file.size)}</div>
+            <div class="card-actions">
+              ${isAudio ? `<button class="btn-icon-action" title="Odada Çal" onclick="syncPlayAudio('${encodedName}')">📻</button>` : ''}
+              ${isMedia ? `<button class="btn-icon-action" title="İzle/Dinle" onclick="streamMedia('${encodedName}', '${isVideo ? 'video' : 'audio'}')">▶️</button>` : ''}
+              <a class="btn-icon-action" title="İndir" href="/api/download?file=${encodedName}" download="${escapeHtml(file.name)}">⬇️</a>
+              <button class="btn-icon-action" title="Sil" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}')">🗑️</button>
+            </div>
           </div>
         </div>
-        <div class="file-actions">
-          ${isAudio ? `<button class="btn-icon-action" onclick="syncPlayAudio('${encodeURIComponent(file.name)}')">📻 Odada Çal</button>` : ''}
-          ${isMedia ? `<button class="btn-icon-action" onclick="streamMedia('${encodeURIComponent(file.name)}', '${isVideo ? 'video' : 'audio'}')">▶️ İzle</button>` : ''}
-          <a class="btn-icon-action" href="/api/download?file=${encodeURIComponent(file.name)}" download="${escapeHtml(file.name)}">⬇️ İndir</a>
-          <button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodeURIComponent(file.name)}')">🗑️</button>
+      `;
+    }).join('');
+  } else {
+    filesList.classList.remove('gallery-view');
+    filesList.innerHTML = files.map(file => {
+      const isVideo = isVideoFile(file.name);
+      const isAudio = isAudioFile(file.name);
+      const isMedia = isVideo || isAudio;
+      const isImg = isImageFile(file.name);
+      const fileIcon = getFileIcon(file.name, file.isDir);
+      const isSelected = state.selectedFiles.has(file.name);
+      const encodedName = encodeURIComponent(file.name);
+
+      return `
+        <div class="file-item ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
+          <div class="file-info">
+            <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelectFile('${encodedName}', this.checked)">
+            <div class="file-icon" ${isImg ? `style="cursor:pointer;" onclick="openLightbox('${encodedName}')"` : ''}>${fileIcon}</div>
+            <div class="file-details">
+              <div class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
+              <div class="file-meta">${formatBytes(file.size)} • ${file.modTime || ''}</div>
+            </div>
+          </div>
+          <div class="file-actions">
+            ${isAudio ? `<button class="btn-icon-action" onclick="syncPlayAudio('${encodedName}')">📻 Odada Çal</button>` : ''}
+            ${isMedia ? `<button class="btn-icon-action" onclick="streamMedia('${encodedName}', '${isVideo ? 'video' : 'audio'}')">▶️ İzle</button>` : ''}
+            ${isImg ? `<button class="btn-icon-action" onclick="openLightbox('${encodedName}')">👁️ Önizle</button>` : ''}
+            <a class="btn-icon-action" href="/api/download?file=${encodedName}" download="${escapeHtml(file.name)}">⬇️ İndir</a>
+            <button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}')">🗑️</button>
+          </div>
         </div>
-      </div>
-    `;
-  }).join('');
+      `;
+    }).join('');
+  }
+}
+
+// Multi-Selection and Batch Operations
+window.toggleSelectFile = function(encodedName, isChecked) {
+  const fileName = decodeURIComponent(encodedName);
+  if (isChecked) {
+    state.selectedFiles.add(fileName);
+  } else {
+    state.selectedFiles.delete(fileName);
+  }
+  updateBatchUI();
+};
+
+function updateBatchUI() {
+  const count = state.selectedFiles.size;
+  if (selectedCountText) {
+    selectedCountText.textContent = `${count} dosya seçildi`;
+  }
+  if (batchBar) {
+    batchBar.style.display = (count > 0 || state.batchMode) ? 'flex' : 'none';
+  }
+  document.querySelectorAll('[data-file]').forEach(el => {
+    const fn = el.getAttribute('data-file');
+    const checked = state.selectedFiles.has(fn);
+    el.classList.toggle('selected', checked);
+    const cb = el.querySelector('input[type="checkbox"]');
+    if (cb && cb.checked !== checked) cb.checked = checked;
+  });
+}
+
+function initGalleryAndBatch() {
+  if (state.viewMode === 'gallery') {
+    galleryViewBtn?.classList.add('active');
+    listViewBtn?.classList.remove('active');
+  } else {
+    listViewBtn?.classList.add('active');
+    galleryViewBtn?.classList.remove('active');
+  }
+
+  listViewBtn?.addEventListener('click', () => {
+    state.viewMode = 'list';
+    localStorage.setItem('airmesh_view_mode', 'list');
+    listViewBtn.classList.add('active');
+    galleryViewBtn?.classList.remove('active');
+    renderFiles(getFilteredFiles());
+  });
+
+  galleryViewBtn?.addEventListener('click', () => {
+    state.viewMode = 'gallery';
+    localStorage.setItem('airmesh_view_mode', 'gallery');
+    galleryViewBtn.classList.add('active');
+    listViewBtn?.classList.remove('active');
+    renderFiles(getFilteredFiles());
+  });
+
+  batchSelectModeBtn?.addEventListener('click', () => {
+    state.batchMode = !state.batchMode;
+    batchSelectModeBtn.classList.toggle('active', state.batchMode);
+    if (!state.batchMode && state.selectedFiles.size === 0) {
+      batchBar.style.display = 'none';
+    } else {
+      batchBar.style.display = 'flex';
+    }
+  });
+
+  cancelBatchBtn?.addEventListener('click', () => {
+    state.selectedFiles.clear();
+    state.batchMode = false;
+    batchSelectModeBtn?.classList.remove('active');
+    updateBatchUI();
+  });
+
+  downloadSelectedZipBtn?.addEventListener('click', () => {
+    if (state.selectedFiles.size === 0) {
+      showToast('Lütfen önce indirilecek dosyaları seçin', 'info');
+      return;
+    }
+    const filesQuery = Array.from(state.selectedFiles).map(encodeURIComponent).join(',');
+    window.location.href = `/api/zip?files=${filesQuery}`;
+  });
+
+  deleteSelectedBtn?.addEventListener('click', async () => {
+    const count = state.selectedFiles.size;
+    if (count === 0) {
+      showToast('Lütfen silinecek dosyaları seçin', 'info');
+      return;
+    }
+    if (!confirm(`Seçilen ${count} dosyayı silmek istediğinize emin misiniz?`)) return;
+
+    try {
+      const filesQuery = Array.from(state.selectedFiles).map(encodeURIComponent).join(',');
+      const res = await fetch(`/api/delete?files=${filesQuery}`, { method: 'POST' });
+      if (res.ok) {
+        showToast(`🗑️ ${count} dosya başarıyla silindi`, 'info');
+        state.selectedFiles.clear();
+        state.batchMode = false;
+        batchSelectModeBtn?.classList.remove('active');
+        updateBatchUI();
+        loadFiles();
+      } else {
+        showToast('Toplu silme sırasında bir hata oluştu', 'error');
+      }
+    } catch (e) {
+      showToast('Bağlantı hatası', 'error');
+    }
+  });
+}
+
+// Lightbox Image Viewer
+window.openLightbox = function(encodedName) {
+  const fileName = decodeURIComponent(encodedName);
+  if (!lightboxModal) return;
+  lightboxImg.src = `/api/stream?file=${encodedName}`;
+  lightboxTitle.textContent = fileName;
+  lightboxDownloadBtn.href = `/api/download?file=${encodedName}`;
+  lightboxDownloadBtn.setAttribute('download', fileName);
+  lightboxModal.classList.add('active');
+};
+
+window.closeLightbox = function() {
+  if (!lightboxModal) return;
+  lightboxModal.classList.remove('active');
+  setTimeout(() => {
+    if (!lightboxModal.classList.contains('active')) {
+      lightboxImg.src = '';
+    }
+  }, 200);
+};
+
+function initLightbox() {
+  lightboxCloseBtn?.addEventListener('click', closeLightbox);
+  lightboxBackdrop?.addEventListener('click', closeLightbox);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && lightboxModal?.classList.contains('active')) {
+      closeLightbox();
+    }
+  });
+}
+
+function filterFiles() {
+  renderFiles(getFilteredFiles());
 }
 
 window.syncPlayAudio = function(encodedName) {
@@ -284,16 +530,6 @@ function setupSyncTrack(url, title) {
   if (titleEl && title) {
     titleEl.textContent = title;
   }
-}
-
-function filterFiles() {
-  const query = fileSearch.value.toLowerCase().trim();
-  if (!query) {
-    renderFiles(state.files);
-    return;
-  }
-  const filtered = state.files.filter(f => f.name.toLowerCase().includes(query));
-  renderFiles(filtered);
 }
 
 function getFileIcon(name, isDir) {

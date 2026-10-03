@@ -64,14 +64,31 @@
             <span class="search-icon">🔍</span>
             <input type="text" id="fileSearch" placeholder="Dosyalarda ara...">
           </div>
-          <button class="action-btn-sm" id="downloadAllZipBtn" title="Tüm Dosyaları İndir">📦 ZIP İndir</button>
-          <button class="action-btn-sm" id="refreshFilesBtn" title="Listeyi Yenile">🔄 Yenile</button>
+          <div class="view-toggle-group">
+            <button class="icon-toggle-btn active" id="listViewBtn" title="Liste Görünümü">📋</button>
+            <button class="icon-toggle-btn" id="galleryViewBtn" title="Galeri Görünümü">🖼️</button>
+          </div>
+          <button class="action-btn-sm" id="batchSelectModeBtn" title="Çoklu Seçim">☑️ Seç</button>
+          <button class="action-btn-sm" id="downloadAllZipBtn" title="Tüm Dosyaları İndir">📦 ZIP</button>
+          <button class="action-btn-sm" id="refreshFilesBtn" title="Listeyi Yenile">🔄</button>
         </div>
 
         <div class="files-container" id="filesList">
           <div class="empty-state">
             <div class="empty-icon">📂</div>
             <p>Paylaşılan dosya listesi yükleniyor...</p>
+          </div>
+        </div>
+
+        <!-- Floating Batch Action Bar -->
+        <div class="batch-bar" id="batchBar" style="display: none;">
+          <div class="batch-info">
+            <span id="selectedCountText">0 dosya seçildi</span>
+          </div>
+          <div class="batch-actions">
+            <button class="btn-primary" id="downloadSelectedZipBtn" style="padding: 6px 14px; font-size: 12px;">📦 Seçilenleri İndir (.ZIP)</button>
+            <button class="action-btn-sm" id="deleteSelectedBtn" style="color: var(--danger-color); padding: 6px 12px; font-size: 12px;">🗑️ Sil</button>
+            <button class="icon-btn" id="cancelBatchBtn" title="Vazgeç">✕</button>
           </div>
         </div>
       </section>
@@ -261,6 +278,19 @@
           <img id="wifiQrImage" src="" alt="Wi-Fi QR" style="width: 210px; height: 210px; border-radius: 12px; border: 6px solid #fff; box-shadow: 0 4px 16px rgba(0,0,0,0.25);">
           <p style="font-size: 13px; color: var(--text-muted); line-height: 1.4;">Telefon kamerasından okutarak Wi-Fi ağına şifre girmeden otomatik bağlanabilirsiniz.</p>
           <div style="font-size: 13px; color: var(--text-main);"><b id="wifiQrSsidText"></b></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Lightbox Image Preview Modal -->
+    <div class="modal" id="lightboxModal">
+      <div class="modal-backdrop" id="lightboxBackdrop"></div>
+      <div class="modal-content" style="max-width: 90vw; max-height: 90vh; background: transparent; border: none; box-shadow: none; text-align: center;">
+        <button class="modal-close" id="lightboxCloseBtn" style="position: absolute; top: -12px; right: -12px; background: rgba(0,0,0,0.8); width: 36px; height: 36px; border-radius: 50%; color: white; z-index: 10; border: 1px solid rgba(255,255,255,0.2);">✕</button>
+        <img id="lightboxImg" src="" alt="Önizleme" style="max-width: 100%; max-height: 75vh; object-fit: contain; border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.8);">
+        <div style="margin-top: 12px; display: flex; justify-content: center; gap: 12px; align-items: center;">
+          <span id="lightboxTitle" style="font-size: 13px; color: #fff; background: rgba(0,0,0,0.6); padding: 5px 14px; border-radius: 20px;"></span>
+          <a id="lightboxDownloadBtn" class="btn-icon-action" href="" download="" style="background: var(--primary-color); color: #fff; border: none; padding: 6px 16px;">⬇️ İndir</a>
         </div>
       </div>
     </div>
