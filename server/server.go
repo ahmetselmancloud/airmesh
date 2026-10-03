@@ -15,7 +15,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -80,6 +82,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/hotspot", s.handleHotspot)
 	mux.HandleFunc("/api/hotspot/qr", s.handleHotspotQR)
 	mux.HandleFunc("/api/delete", s.handleDelete)
+	mux.HandleFunc("/api/openfolder", s.handleOpenFolder)
 	mux.HandleFunc("/api/speedtest/ping", s.handleSpeedtestPing)
 	mux.HandleFunc("/api/speedtest/download", s.handleSpeedtestDownload)
 	mux.HandleFunc("/api/speedtest/upload", s.handleSpeedtestUpload)
@@ -278,6 +281,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	})
 	s.hub.broadcast(toastPayload)
 	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
+
+	// Trigger native Windows Toast Notification
+	sendWindowsNotification("AirMesh - Yeni Dosya", fmt.Sprintf("%s (%s tarafından)", fileName, uploader))
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"success"}`))
@@ -739,4 +745,33 @@ func encodeWSTextFrame(data []byte) []byte {
 	}
 
 	return append(header, data...)
+}
+
+func (s *Server) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
+	absPath, err := filepath.Abs(s.SharedDir)
+	if err != nil {
+		absPath = s.SharedDir
+	}
+	go func() {
+		if runtime.GOOS == "windows" {
+			_ = exec.Command("explorer.exe", absPath).Start()
+		} else if runtime.GOOS == "darwin" {
+			_ = exec.Command("open", absPath).Start()
+		} else {
+			_ = exec.Command("xdg-open", absPath).Start()
+		}
+	}()
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(fmt.Sprintf(`{"status":"success","path":%q}`, absPath)))
+}
+
+func sendWindowsNotification(title, message string) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	go func() {
+		script := fmt.Sprintf(`[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); $xml = [xml]$template.GetXml(); $xml.GetElementsByTagName('text')[0].AppendChild($xml.CreateTextNode(%q)) > $null; $xml.GetElementsByTagName('text')[1].AppendChild($xml.CreateTextNode(%q)) > $null; $toastXml = New-Object Windows.Data.Xml.Dom.XmlDocument; $toastXml.LoadXml($xml.OuterXml); $toast = [Windows.UI.Notifications.ToastNotification]::new($toastXml); [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('AirMesh').Show($toast)`, title, message)
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+		_ = cmd.Run()
+	}()
 }

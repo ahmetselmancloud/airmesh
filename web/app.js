@@ -140,6 +140,16 @@ function initTabs() {
   });
 
   document.getElementById('refreshFilesBtn')?.addEventListener('click', loadFiles);
+  document.getElementById('openFolderBtn')?.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/openfolder', { method: 'POST' });
+      if (res.ok) {
+        showToast('📂 Paylaşılan klasör bilgisayarda açıldı', 'info');
+      }
+    } catch (e) {
+      showToast('Klasör açılamadı', 'error');
+    }
+  });
   downloadAllZipBtn?.addEventListener('click', () => {
     window.location.href = '/api/zip';
   });
