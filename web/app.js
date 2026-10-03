@@ -6,6 +6,7 @@ const state = {
   ws: null,
   currentDir: '',
   files: [],
+  activeFilter: 'all',
   activeUploads: {},
   isPlayingSync: false,
   viewMode: localStorage.getItem('airmesh_view_mode') || 'list',
@@ -67,6 +68,18 @@ const newFolderBackdrop = document.getElementById('newFolderBackdrop');
 const cancelNewFolderBtn = document.getElementById('cancelNewFolderBtn');
 const newFolderForm = document.getElementById('newFolderForm');
 const newFolderNameInput = document.getElementById('newFolderNameInput');
+
+// Storage & Rename DOM Elements
+const storageText = document.getElementById('storageText');
+const storageProgressFill = document.getElementById('storageProgressFill');
+const renameModal = document.getElementById('renameModal');
+const renameCloseBtn = document.getElementById('renameCloseBtn');
+const renameBackdrop = document.getElementById('renameBackdrop');
+const cancelRenameBtn = document.getElementById('cancelRenameBtn');
+const renameForm = document.getElementById('renameForm');
+const renameOldName = document.getElementById('renameOldName');
+const renameCurrentLabel = document.getElementById('renameCurrentLabel');
+const renameNewNameInput = document.getElementById('renameNewNameInput');
 
 // Security & Auth DOM Elements
 const securityBtn = document.getElementById('securityBtn');
@@ -151,7 +164,10 @@ document.addEventListener('DOMContentLoaded', () => {
   initGalleryAndBatch();
   initLightbox();
   initFolderHandlers();
+  initRenameHandlers();
+  initFilterChips();
   checkSecurityStatus();
+  loadStorageInfo();
   loadFiles();
   initUploadHandlers();
   initChat();
@@ -338,6 +354,27 @@ function renderBreadcrumbs() {
   breadcrumbBar.innerHTML = html;
 }
 
+async function loadStorageInfo() {
+  try {
+    const res = await fetch('/api/storage');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!storageText || !storageProgressFill) return;
+    const freeText = formatBytes(data.free);
+    const totalText = formatBytes(data.total);
+    const usedPercent = data.percentUsed ? data.percentUsed.toFixed(1) : 0;
+    storageText.textContent = `${freeText} boş / ${totalText} (%${usedPercent} dolu)`;
+    storageProgressFill.style.width = `${Math.min(100, usedPercent)}%`;
+    if (usedPercent > 85) {
+      storageProgressFill.classList.add('warning');
+    } else {
+      storageProgressFill.classList.remove('warning');
+    }
+  } catch (e) {
+    console.error('Storage query error:', e);
+  }
+}
+
 async function loadFiles() {
   try {
     const headers = state.token ? { 'X-AirMesh-Token': state.token } : {};
@@ -358,7 +395,9 @@ async function loadFiles() {
       state.files = [];
     }
     renderBreadcrumbs();
+    updateFilterCounts();
     renderFiles(getFilteredFiles());
+    loadStorageInfo();
   } catch (err) {
     filesList.innerHTML = `
       <div class="empty-state">
@@ -385,6 +424,18 @@ function getFilteredFiles() {
   let list = state.files || [];
   if (query) {
     list = list.filter(f => f.name.toLowerCase().includes(query));
+  }
+  if (state.activeFilter && state.activeFilter !== 'all') {
+    list = list.filter(f => {
+      switch (state.activeFilter) {
+        case 'folder': return f.isDir;
+        case 'image': return !f.isDir && isImageFile(f.name);
+        case 'video': return !f.isDir && isVideoFile(f.name);
+        case 'audio': return !f.isDir && isAudioFile(f.name);
+        case 'document': return !f.isDir && !isImageFile(f.name) && !isVideoFile(f.name) && !isAudioFile(f.name);
+        default: return true;
+      }
+    });
   }
   return list.slice().sort((a, b) => {
     if (a.isDir && !b.isDir) return -1;
@@ -418,6 +469,7 @@ function renderFiles(files) {
   }
 
   const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+  const canEdit = state.isAdmin || !state.readOnly;
 
   if (state.viewMode === 'gallery') {
     filesList.classList.add('gallery-view');
@@ -429,7 +481,7 @@ function renderFiles(files) {
         const subPath = state.currentDir ? `${state.currentDir}/${file.name}` : file.name;
         const encodedSubPath = encodeURIComponent(subPath);
         return `
-          <div class="file-card is-directory ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
+          <div class="file-card is-directory ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}" ondragover="handleFolderDragOver(event)" ondragleave="handleFolderDragLeave(event)" ondrop="handleFolderDrop(event, '${encodedName}')">
             <input type="checkbox" class="card-checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleSelectFile('${encodedName}', this.checked)">
             <div class="card-thumb-wrapper" onclick="navigateToDir('${escapeJs(subPath)}')">
               <div class="card-placeholder-icon">📁</div>
@@ -439,6 +491,7 @@ function renderFiles(files) {
               <div class="card-title" title="${escapeHtml(file.name)}" onclick="navigateToDir('${escapeJs(subPath)}')">${escapeHtml(file.name)}</div>
               <div class="card-meta">Klasör • ${file.modTime || ''}</div>
               <div class="card-actions">
+                ${canEdit ? `<button class="btn-icon-action" title="Yeniden Adlandır" onclick="event.stopPropagation(); openRenameModal('${encodedName}')">✏️</button>` : ''}
                 <a class="btn-icon-action" title="Klasörü ZIP Olarak İndir" href="/api/zip?dir=${encodedSubPath}">📦 ZIP</a>
                 ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" title="Sil" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}', true)">🗑️</button>` : ''}
               </div>
@@ -479,13 +532,14 @@ function renderFiles(files) {
       }
 
       return `
-        <div class="file-card ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
+        <div class="file-card ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}" draggable="true" ondragstart="handleFileDragStart(event, '${encodedName}')">
           <input type="checkbox" class="card-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelectFile('${encodedName}', this.checked)">
           ${thumbHtml}
           <div class="card-body">
             <div class="card-title" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
             <div class="card-meta">${formatBytes(file.size)}</div>
             <div class="card-actions">
+              ${canEdit ? `<button class="btn-icon-action" title="Yeniden Adlandır" onclick="event.stopPropagation(); openRenameModal('${encodedName}')">✏️</button>` : ''}
               ${isAudio ? `<button class="btn-icon-action" title="Odada Çal" onclick="syncPlayAudio('${encodedName}')">📻</button>` : ''}
               ${isMedia ? `<button class="btn-icon-action" title="İzle/Dinle" onclick="streamMedia('${encodedName}', '${isVideo ? 'video' : 'audio'}')">▶️</button>` : ''}
               <a class="btn-icon-action" title="İndir" href="/api/download?file=${encodedName}${dirQuery}" download="${escapeHtml(file.name)}">⬇️</a>
@@ -505,7 +559,7 @@ function renderFiles(files) {
         const subPath = state.currentDir ? `${state.currentDir}/${file.name}` : file.name;
         const encodedSubPath = encodeURIComponent(subPath);
         return `
-          <div class="file-item is-directory ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
+          <div class="file-item is-directory ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}" ondragover="handleFolderDragOver(event)" ondragleave="handleFolderDragLeave(event)" ondrop="handleFolderDrop(event, '${encodedName}')">
             <div class="file-info" onclick="navigateToDir('${escapeJs(subPath)}')">
               <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleSelectFile('${encodedName}', this.checked)">
               <div class="file-icon">📁</div>
@@ -515,6 +569,7 @@ function renderFiles(files) {
               </div>
             </div>
             <div class="file-actions">
+              ${canEdit ? `<button class="btn-icon-action" title="Yeniden Adlandır" onclick="event.stopPropagation(); openRenameModal('${encodedName}')">✏️</button>` : ''}
               <a class="btn-icon-action" href="/api/zip?dir=${encodedSubPath}" title="Klasörü ZIP Olarak İndir">📦 ZIP</a>
               ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}', true)">🗑️ Sil</button>` : ''}
             </div>
@@ -529,7 +584,7 @@ function renderFiles(files) {
       const fileIcon = getFileIcon(file.name, file.isDir);
 
       return `
-        <div class="file-item ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
+        <div class="file-item ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}" draggable="true" ondragstart="handleFileDragStart(event, '${encodedName}')">
           <div class="file-info">
             <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''} onchange="toggleSelectFile('${encodedName}', this.checked)">
             <div class="file-icon" ${isImg ? `style="cursor:pointer;" onclick="openLightbox('${encodedName}')"` : ''}>${fileIcon}</div>
@@ -539,6 +594,7 @@ function renderFiles(files) {
             </div>
           </div>
           <div class="file-actions">
+            ${canEdit ? `<button class="btn-icon-action" title="Yeniden Adlandır" onclick="event.stopPropagation(); openRenameModal('${encodedName}')">✏️ Adlandır</button>` : ''}
             ${isAudio ? `<button class="btn-icon-action" onclick="syncPlayAudio('${encodedName}')">📻 Odada Çal</button>` : ''}
             ${isMedia ? `<button class="btn-icon-action" onclick="streamMedia('${encodedName}', '${isVideo ? 'video' : 'audio'}')">▶️ İzle</button>` : ''}
             ${isImg ? `<button class="btn-icon-action" onclick="openLightbox('${encodedName}')">👁️ Önizle</button>` : ''}
@@ -1568,4 +1624,150 @@ function initFolderHandlers() {
     }
   });
 }
+
+// Filter Chips
+function initFilterChips() {
+  document.querySelectorAll('.filter-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      state.activeFilter = btn.getAttribute('data-filter') || 'all';
+      renderFiles(getFilteredFiles());
+    });
+  });
+}
+
+function updateFilterCounts() {
+  const files = state.files || [];
+  let cAll = files.length;
+  let cFolder = 0, cImage = 0, cVideo = 0, cAudio = 0, cDoc = 0;
+  files.forEach(f => {
+    if (f.isDir) cFolder++;
+    else if (isImageFile(f.name)) cImage++;
+    else if (isVideoFile(f.name)) cVideo++;
+    else if (isAudioFile(f.name)) cAudio++;
+    else cDoc++;
+  });
+  const elAll = document.getElementById('countAll');
+  const elFolder = document.getElementById('countFolder');
+  const elImage = document.getElementById('countImage');
+  const elVideo = document.getElementById('countVideo');
+  const elAudio = document.getElementById('countAudio');
+  const elDoc = document.getElementById('countDocument');
+  if (elAll) elAll.textContent = cAll;
+  if (elFolder) elFolder.textContent = cFolder;
+  if (elImage) elImage.textContent = cImage;
+  if (elVideo) elVideo.textContent = cVideo;
+  if (elAudio) elAudio.textContent = cAudio;
+  if (elDoc) elDoc.textContent = cDoc;
+}
+
+// Rename & Move Handlers
+window.openRenameModal = function(encodedName) {
+  const fileName = decodeURIComponent(encodedName);
+  if (!renameModal) return;
+  renameOldName.value = fileName;
+  renameCurrentLabel.textContent = `Mevcut İsim: ${fileName}`;
+  renameNewNameInput.value = fileName;
+  renameModal.classList.add('active');
+  setTimeout(() => {
+    renameNewNameInput.focus();
+    const lastDot = fileName.lastIndexOf('.');
+    if (lastDot > 0) {
+      renameNewNameInput.setSelectionRange(0, lastDot);
+    } else {
+      renameNewNameInput.select();
+    }
+  }, 150);
+};
+
+function initRenameHandlers() {
+  function closeRename() {
+    renameModal?.classList.remove('active');
+  }
+  renameCloseBtn?.addEventListener('click', closeRename);
+  renameBackdrop?.addEventListener('click', closeRename);
+  cancelRenameBtn?.addEventListener('click', closeRename);
+
+  renameForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const oldName = renameOldName.value;
+    const newName = renameNewNameInput.value.trim();
+    if (!oldName || !newName || oldName === newName) {
+      closeRename();
+      return;
+    }
+
+    try {
+      const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+      const res = await fetch(`/api/rename?old=${encodeURIComponent(oldName)}&new=${encodeURIComponent(newName)}${dirQuery}`, {
+        method: 'POST',
+        headers: state.token ? { 'X-AirMesh-Token': state.token } : {}
+      });
+
+      if (res.ok) {
+        closeRename();
+        showToast(`✏️ "${oldName}" adı "${newName}" olarak güncellendi`, 'success');
+        loadFiles();
+      } else {
+        const err = await res.text();
+        showToast(err || 'İsim değiştirilemedi', 'error');
+      }
+    } catch (err) {
+      showToast('Bağlantı hatası', 'error');
+    }
+  });
+}
+
+// Drag & Drop Moving into Folders
+window.handleFileDragStart = function(e, encodedName) {
+  const fn = decodeURIComponent(encodedName);
+  e.dataTransfer.setData('text/plain', fn);
+  e.dataTransfer.effectAllowed = 'move';
+};
+
+window.handleFolderDragOver = function(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over-folder');
+};
+
+window.handleFolderDragLeave = function(e) {
+  e.currentTarget.classList.remove('drag-over-folder');
+};
+
+window.handleFolderDrop = async function(e, encodedFolder) {
+  e.preventDefault();
+  e.stopPropagation();
+  e.currentTarget.classList.remove('drag-over-folder');
+
+  const draggedFile = e.dataTransfer.getData('text/plain');
+  const targetFolder = decodeURIComponent(encodedFolder);
+  if (!draggedFile || draggedFile === targetFolder) return;
+
+  if (state.readOnly && !state.isAdmin) {
+    showToast('🔒 Salt-okunur modda dosya taşınamaz', 'error');
+    return;
+  }
+
+  const newPath = `${targetFolder}/${draggedFile}`;
+  try {
+    const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+    const res = await fetch(`/api/rename?old=${encodeURIComponent(draggedFile)}&new=${encodeURIComponent(newPath)}${dirQuery}`, {
+      method: 'POST',
+      headers: state.token ? { 'X-AirMesh-Token': state.token } : {}
+    });
+
+    if (res.ok) {
+      showToast(`📂 "${draggedFile}" dosyası "${targetFolder}" içine taşındı`, 'success');
+      loadFiles();
+    } else {
+      const err = await res.text();
+      showToast(err || 'Dosya taşınamadı', 'error');
+    }
+  } catch (err) {
+    showToast('Bağlantı hatası', 'error');
+  }
+};
 

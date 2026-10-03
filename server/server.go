@@ -90,6 +90,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/hotspot/qr", s.handleHotspotQR)
 	mux.HandleFunc("/api/delete", s.handleDelete)
 	mux.HandleFunc("/api/mkdir", s.handleMkdir)
+	mux.HandleFunc("/api/rename", s.handleRename)
+	mux.HandleFunc("/api/storage", s.handleStorage)
 	mux.HandleFunc("/api/openfolder", s.handleOpenFolder)
 	mux.HandleFunc("/api/speedtest/ping", s.handleSpeedtestPing)
 	mux.HandleFunc("/api/speedtest/download", s.handleSpeedtestDownload)
@@ -268,6 +270,68 @@ func (s *Server) handleMkdir(w http.ResponseWriter, r *http.Request) {
 	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"status":"success","message":"Klasör oluşturuldu"}`))
+}
+
+func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Yalnızca POST desteklenir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !s.sec.IsAdmin(r) && s.sec.ReadOnly {
+		http.Error(w, "Oda salt-okunur modundadır. İsim değiştirilemez.", http.StatusForbidden)
+		return
+	}
+
+	dirParam := r.URL.Query().Get("dir")
+	oldName := strings.TrimSpace(r.URL.Query().Get("old"))
+	newName := strings.TrimSpace(r.URL.Query().Get("new"))
+
+	if oldName == "" || newName == "" {
+		http.Error(w, "Eski veya yeni dosya adı belirtilmedi", http.StatusBadRequest)
+		return
+	}
+
+	oldRel := filepath.Join(dirParam, oldName)
+	oldPath, err := s.getSafeRelPath(oldRel)
+	if err != nil {
+		http.Error(w, "Geçersiz eski dosya yolu: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	newRel := filepath.Join(dirParam, newName)
+	newPath, err := s.getSafeRelPath(newRel)
+	if err != nil {
+		http.Error(w, "Geçersiz yeni dosya yolu: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Ensure destination directory exists (useful if moving into a folder)
+	destDir := filepath.Dir(newPath)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		http.Error(w, "Hedef klasör hazırlanamadı: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := os.Rename(oldPath, newPath); err != nil {
+		http.Error(w, "İsim değiştirilemedi: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"success","message":"İsim başarıyla değiştirildi"}`))
+}
+
+func (s *Server) handleStorage(w http.ResponseWriter, r *http.Request) {
+	info, err := getDiskStorage(s.SharedDir)
+	if err != nil {
+		http.Error(w, "Disk bilgisi alınamadı: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(info)
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {

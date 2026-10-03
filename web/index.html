@@ -60,6 +60,17 @@
       
       <!-- FILES TAB -->
       <section id="tab-files" class="tab-pane active">
+        <!-- Storage Info Bar -->
+        <div class="storage-bar-widget" id="storageBarWidget">
+          <div class="storage-info">
+            <span class="storage-label">💾 Disk Alanı</span>
+            <span class="storage-text" id="storageText">Hesaplanıyor...</span>
+          </div>
+          <div class="storage-progress-bg">
+            <div class="storage-progress-fill" id="storageProgressFill" style="width: 0%;"></div>
+          </div>
+        </div>
+
         <div class="section-toolbar">
           <div class="search-box">
             <span class="search-icon">🔍</span>
@@ -74,6 +85,16 @@
           <button class="action-btn-sm" id="downloadAllZipBtn" title="Tüm Dosyaları İndir">📦 ZIP</button>
           <button class="action-btn-sm" id="refreshFilesBtn" title="Listeyi Yenile">🔄</button>
           <button class="action-btn-sm" id="openFolderBtn" title="Klasörü Bilgisayarda Aç">📂 Gezgin</button>
+        </div>
+
+        <!-- Filter Chips Bar -->
+        <div class="filter-chips-bar" id="filterChipsBar">
+          <button class="filter-chip active" data-filter="all">Tümü <span class="chip-count" id="countAll">0</span></button>
+          <button class="filter-chip" data-filter="folder">📁 Klasör <span class="chip-count" id="countFolder">0</span></button>
+          <button class="filter-chip" data-filter="image">🖼️ Resim <span class="chip-count" id="countImage">0</span></button>
+          <button class="filter-chip" data-filter="video">🎬 Video <span class="chip-count" id="countVideo">0</span></button>
+          <button class="filter-chip" data-filter="audio">🎵 Ses <span class="chip-count" id="countAudio">0</span></button>
+          <button class="filter-chip" data-filter="document">📄 Belge <span class="chip-count" id="countDocument">0</span></button>
         </div>
 
         <!-- Breadcrumb Navigation Bar -->
@@ -396,6 +417,24 @@
           <div style="display: flex; gap: 10px; justify-content: flex-end;">
             <button type="button" class="action-btn-sm" id="cancelNewFolderBtn">Vazgeç</button>
             <button type="submit" class="btn-primary" style="padding: 8px 18px;">Oluştur</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div class="modal" id="renameModal">
+      <div class="modal-backdrop" id="renameBackdrop"></div>
+      <div class="modal-content" style="max-width: 380px;">
+        <button class="modal-close" id="renameCloseBtn">✕</button>
+        <h3 style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">✏️ Yeniden Adlandır</h3>
+        <form id="renameForm">
+          <input type="hidden" id="renameOldName">
+          <div id="renameCurrentLabel" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px; word-break: break-all;"></div>
+          <input type="text" id="renameNewNameInput" required style="width: 100%; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border); background: rgba(0,0,0,0.25); color: #fff; font-size: 14px; margin-bottom: 14px;">
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button type="button" class="action-btn-sm" id="cancelRenameBtn">Vazgeç</button>
+            <button type="submit" class="btn-primary" style="padding: 8px 18px;">Kaydet</button>
           </div>
         </form>
       </div>
