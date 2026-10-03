@@ -70,9 +70,15 @@
             <button class="icon-toggle-btn" id="galleryViewBtn" title="Galeri Görünümü">🖼️</button>
           </div>
           <button class="action-btn-sm" id="batchSelectModeBtn" title="Çoklu Seçim">☑️ Seç</button>
+          <button class="action-btn-sm" id="newFolderBtn" title="Yeni Klasör Oluştur">📁+ Klasör</button>
           <button class="action-btn-sm" id="downloadAllZipBtn" title="Tüm Dosyaları İndir">📦 ZIP</button>
           <button class="action-btn-sm" id="refreshFilesBtn" title="Listeyi Yenile">🔄</button>
-          <button class="action-btn-sm" id="openFolderBtn" title="Klasörü Bilgisayarda Aç">📂 Klasör</button>
+          <button class="action-btn-sm" id="openFolderBtn" title="Klasörü Bilgisayarda Aç">📂 Gezgin</button>
+        </div>
+
+        <!-- Breadcrumb Navigation Bar -->
+        <div class="breadcrumb-bar" id="breadcrumbBar">
+          <span class="breadcrumb-item active" onclick="navigateToDir('')">🏠 Ana Dizin</span>
         </div>
 
         <div class="files-container" id="filesList">
@@ -99,10 +105,14 @@
       <section id="tab-upload" class="tab-pane">
         <div class="upload-dropzone" id="dropzone">
           <div class="drop-icon">🚀</div>
-          <h3>Dosyaları Buraya Sürükle & Bırak</h3>
+          <h3>Dosyaları veya Klasörü Buraya Sürükle & Bırak</h3>
           <p>veya cihazından seçmek için tıkla</p>
-          <input type="file" id="fileInput" multiple style="display:none">
-          <button class="btn-primary" onclick="document.getElementById('fileInput').click()">Dosya Seç</button>
+          <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+            <input type="file" id="fileInput" multiple style="display:none">
+            <input type="file" id="folderInput" webkitdirectory directory multiple style="display:none">
+            <button class="btn-primary" onclick="document.getElementById('fileInput').click()">📄 Dosya Seç</button>
+            <button class="action-btn-sm" style="padding: 10px 20px; font-size: 14px;" onclick="document.getElementById('folderInput').click()">📁 Klasör Seç</button>
+          </div>
           <div class="upload-hint">Sıfır internet kotası • Doğrudan diske streaming • Yüksek hız</div>
         </div>
 
@@ -372,6 +382,22 @@
 
           <button id="saveSecurityBtn" class="btn-primary" style="margin-top: 6px;">Ayarları Kaydet</button>
         </div>
+      </div>
+    </div>
+
+    <!-- New Folder Modal -->
+    <div class="modal" id="newFolderModal">
+      <div class="modal-backdrop" id="newFolderBackdrop"></div>
+      <div class="modal-content" style="max-width: 360px;">
+        <button class="modal-close" id="newFolderCloseBtn">✕</button>
+        <h3 style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">📁 Yeni Klasör Oluştur</h3>
+        <form id="newFolderForm">
+          <input type="text" id="newFolderNameInput" placeholder="Klasör adı..." required style="width: 100%; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border); background: rgba(0,0,0,0.25); color: #fff; font-size: 14px; margin-bottom: 14px;">
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button type="button" class="action-btn-sm" id="cancelNewFolderBtn">Vazgeç</button>
+            <button type="submit" class="btn-primary" style="padding: 8px 18px;">Oluştur</button>
+          </div>
+        </form>
       </div>
     </div>
 

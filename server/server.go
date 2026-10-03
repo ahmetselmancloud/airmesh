@@ -33,6 +33,11 @@ type FileItem struct {
 	IsDir   bool   `json:"isDir"`
 }
 
+type ListFilesResponse struct {
+	CurrentDir string     `json:"currentDir"`
+	Files      []FileItem `json:"files"`
+}
+
 type DeviceInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -84,6 +89,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/hotspot", s.handleHotspot)
 	mux.HandleFunc("/api/hotspot/qr", s.handleHotspotQR)
 	mux.HandleFunc("/api/delete", s.handleDelete)
+	mux.HandleFunc("/api/mkdir", s.handleMkdir)
 	mux.HandleFunc("/api/openfolder", s.handleOpenFolder)
 	mux.HandleFunc("/api/speedtest/ping", s.handleSpeedtestPing)
 	mux.HandleFunc("/api/speedtest/download", s.handleSpeedtestDownload)
@@ -155,7 +161,14 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 }
 
 func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
-	entries, err := os.ReadDir(s.SharedDir)
+	dirParam := r.URL.Query().Get("dir")
+	targetDir, err := s.getSafeRelPath(dirParam)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	entries, err := os.ReadDir(targetDir)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Klasör okunamadı: %v", err), http.StatusInternalServerError)
 		return
@@ -175,27 +188,98 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	cleanRel := filepath.ToSlash(filepath.Clean(filepath.FromSlash(dirParam)))
+	if cleanRel == "." || cleanRel == "/" || cleanRel == "\\" {
+		cleanRel = ""
+	}
+
+	resp := ListFilesResponse{
+		CurrentDir: cleanRel,
+		Files:      files,
+	}
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(files)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) getSafeRelPath(relPath string) (string, error) {
+	clean := filepath.Clean(filepath.FromSlash(relPath))
+	absShared, err := filepath.Abs(s.SharedDir)
+	if err != nil {
+		absShared = s.SharedDir
+	}
+
+	if clean == "." || clean == "/" || clean == "\\" || clean == "" {
+		return absShared, nil
+	}
+
+	if strings.HasPrefix(clean, "..") || strings.Contains(clean, "/../") || strings.Contains(clean, "\\..\\") {
+		return "", errors.New("geçersiz yol (path traversal engellendi)")
+	}
+
+	fullPath := filepath.Join(absShared, clean)
+	absTarget, err := filepath.Abs(fullPath)
+	if err != nil {
+		return "", errors.New("hedef yol çözülemedi")
+	}
+
+	if !strings.HasPrefix(absTarget, absShared) {
+		return "", errors.New("yetkisiz dizin erişimi engellendi")
+	}
+
+	return absTarget, nil
 }
 
 func (s *Server) getSafeFilePath(fileName string) (string, error) {
-	cleanName := filepath.Base(filepath.Clean(fileName))
-	if cleanName == "." || cleanName == "/" || cleanName == "\\" {
-		return "", errors.New("geçersiz dosya adı")
+	return s.getSafeRelPath(fileName)
+}
+
+func (s *Server) handleMkdir(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Yalnızca POST desteklenir", http.StatusMethodNotAllowed)
+		return
 	}
-	fullPath := filepath.Join(s.SharedDir, cleanName)
-	return fullPath, nil
+
+	if !s.sec.IsAdmin(r) && s.sec.ReadOnly {
+		http.Error(w, "Oda salt-okunur modundadır. Klasör oluşturulamaz.", http.StatusForbidden)
+		return
+	}
+
+	dirParam := r.URL.Query().Get("dir")
+	folderName := strings.TrimSpace(r.URL.Query().Get("name"))
+	if folderName == "" {
+		http.Error(w, "Klasör adı belirtilmedi", http.StatusBadRequest)
+		return
+	}
+
+	cleanFolderName := filepath.Base(filepath.Clean(folderName))
+	relTarget := filepath.Join(dirParam, cleanFolderName)
+	targetPath, err := s.getSafeRelPath(relTarget)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := os.MkdirAll(targetPath, 0755); err != nil {
+		http.Error(w, fmt.Sprintf("Klasör oluşturulamadı: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"status":"success","message":"Klasör oluşturuldu"}`))
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	fileName := r.URL.Query().Get("file")
+	dirParam := r.URL.Query().Get("dir")
 	if fileName == "" {
 		http.Error(w, "Dosya adı belirtilmedi", http.StatusBadRequest)
 		return
 	}
 
-	fullPath, err := s.getSafeFilePath(fileName)
+	relPath := filepath.Join(dirParam, fileName)
+	fullPath, err := s.getSafeRelPath(relPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -221,12 +305,14 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	fileName := r.URL.Query().Get("file")
+	dirParam := r.URL.Query().Get("dir")
 	if fileName == "" {
 		http.Error(w, "Dosya adı belirtilmedi", http.StatusBadRequest)
 		return
 	}
 
-	fullPath, err := s.getSafeFilePath(fileName)
+	relPath := filepath.Join(dirParam, fileName)
+	fullPath, err := s.getSafeRelPath(relPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -267,6 +353,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dirParam := r.URL.Query().Get("dir")
 	fileName := r.URL.Query().Get("name")
 	if fileName == "" {
 		// Try multipart header
@@ -278,7 +365,13 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 					if err != nil {
 						continue
 					}
-					targetPath, _ := s.getSafeFilePath(h.Filename)
+					relPath := filepath.Join(dirParam, h.Filename)
+					targetPath, err := s.getSafeRelPath(relPath)
+					if err != nil {
+						_ = src.Close()
+						continue
+					}
+					_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
 					dst, err := os.Create(targetPath)
 					if err == nil {
 						writer := bufio.NewWriterSize(dst, 4*1024*1024)
@@ -297,11 +390,13 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fullPath, err := s.getSafeFilePath(fileName)
+	relPath := filepath.Join(dirParam, fileName)
+	fullPath, err := s.getSafeRelPath(relPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	_ = os.MkdirAll(filepath.Dir(fullPath), 0755)
 
 	uploader := r.URL.Query().Get("uploader")
 	if uploader == "" {
@@ -342,6 +437,13 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 // On-the-fly streaming zip without buffering entire archive on disk or in RAM
 func (s *Server) handleZipStream(w http.ResponseWriter, r *http.Request) {
+	dirParam := r.URL.Query().Get("dir")
+	targetDir, err := s.getSafeRelPath(dirParam)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	filesQuery := r.URL.Query().Get("files")
 	var targetFiles []string
 	archiveName := "airmesh_tum_dosyalar.zip"
@@ -355,15 +457,13 @@ func (s *Server) handleZipStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		entries, err := os.ReadDir(s.SharedDir)
+		entries, err := os.ReadDir(targetDir)
 		if err != nil {
 			http.Error(w, "Klasör okunamadı", http.StatusInternalServerError)
 			return
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
-				targetFiles = append(targetFiles, e.Name())
-			}
+			targetFiles = append(targetFiles, e.Name())
 		}
 	}
 
@@ -374,36 +474,51 @@ func (s *Server) handleZipStream(w http.ResponseWriter, r *http.Request) {
 	defer zipWriter.Close()
 
 	for _, fileName := range targetFiles {
-		filePath, err := s.getSafeFilePath(fileName)
+		relPath := filepath.Join(dirParam, fileName)
+		filePath, err := s.getSafeRelPath(relPath)
 		if err != nil {
 			continue
 		}
-		file, err := os.Open(filePath)
-		if err != nil {
-			continue
-		}
+		s.addFileOrDirToZip(zipWriter, filePath, fileName)
+	}
+}
 
-		stat, err := file.Stat()
+func (s *Server) addFileOrDirToZip(zw *zip.Writer, absPath, relName string) {
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return
+	}
+	if info.IsDir() {
+		_ = filepath.Walk(absPath, func(path string, fi os.FileInfo, err error) error {
+			if err != nil || fi.IsDir() {
+				return nil
+			}
+			subRel, err := filepath.Rel(absPath, path)
+			if err != nil {
+				return nil
+			}
+			zipEntryName := filepath.ToSlash(filepath.Join(relName, subRel))
+			f, err := os.Open(path)
+			if err != nil {
+				return nil
+			}
+			defer f.Close()
+			w, err := zw.Create(zipEntryName)
+			if err == nil {
+				_, _ = io.Copy(w, f)
+			}
+			return nil
+		})
+	} else {
+		f, err := os.Open(absPath)
 		if err != nil {
-			file.Close()
-			continue
+			return
 		}
-
-		header, err := zip.FileInfoHeader(stat)
-		if err != nil {
-			file.Close()
-			continue
+		defer f.Close()
+		w, err := zw.Create(filepath.ToSlash(relName))
+		if err == nil {
+			_, _ = io.Copy(w, f)
 		}
-		header.Method = zip.Deflate
-
-		entryWriter, err := zipWriter.CreateHeader(header)
-		if err != nil {
-			file.Close()
-			continue
-		}
-
-		_, _ = io.Copy(entryWriter, file)
-		file.Close()
 	}
 }
 
@@ -478,6 +593,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dirParam := r.URL.Query().Get("dir")
 	fileParam := r.URL.Query().Get("file")
 	if fileParam == "" {
 		fileParam = r.URL.Query().Get("files")
@@ -493,9 +609,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		if fn == "" {
 			continue
 		}
-		fullPath, err := s.getSafeFilePath(fn)
+		relPath := filepath.Join(dirParam, fn)
+		fullPath, err := s.getSafeRelPath(relPath)
 		if err == nil {
-			_ = os.Remove(fullPath)
+			_ = os.RemoveAll(fullPath)
 		}
 	}
 

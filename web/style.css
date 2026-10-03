@@ -1126,3 +1126,55 @@ input:checked + .slider:before {
   transform: translateX(20px);
 }
 
+/* Breadcrumb Navigation */
+.breadcrumb-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-md);
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.breadcrumb-item {
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+}
+
+.breadcrumb-item:hover {
+  color: var(--primary-color);
+  text-decoration: underline;
+}
+
+.breadcrumb-item.active {
+  color: var(--text-main);
+  font-weight: 600;
+  cursor: default;
+  text-decoration: none;
+}
+
+.breadcrumb-separator {
+  color: var(--text-muted);
+  user-select: none;
+  font-size: 11px;
+}
+
+.file-item.is-directory {
+  cursor: pointer;
+  border-left: 3px solid var(--primary-color);
+}
+
+.file-card.is-directory {
+  cursor: pointer;
+  border-bottom: 3px solid var(--primary-color);
+}
+

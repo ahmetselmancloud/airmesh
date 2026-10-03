@@ -4,6 +4,7 @@ const state = {
   deviceId: 'dev_' + Math.random().toString(36).substring(2, 9),
   deviceName: localStorage.getItem('airmesh_dev_name') || getRandomDeviceName(),
   ws: null,
+  currentDir: '',
   files: [],
   activeUploads: {},
   isPlayingSync: false,
@@ -39,6 +40,7 @@ const filesList = document.getElementById('filesList');
 const fileSearch = document.getElementById('fileSearch');
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
+const folderInput = document.getElementById('folderInput');
 const uploadList = document.getElementById('uploadList');
 const uploadItems = document.getElementById('uploadItems');
 const chatMessages = document.getElementById('chatMessages');
@@ -57,6 +59,14 @@ const qrImage = document.getElementById('qrImage');
 const qrUrlText = document.getElementById('qrUrlText');
 const downloadAllZipBtn = document.getElementById('downloadAllZipBtn');
 const toastContainer = document.getElementById('toastContainer');
+const breadcrumbBar = document.getElementById('breadcrumbBar');
+const newFolderBtn = document.getElementById('newFolderBtn');
+const newFolderModal = document.getElementById('newFolderModal');
+const newFolderCloseBtn = document.getElementById('newFolderCloseBtn');
+const newFolderBackdrop = document.getElementById('newFolderBackdrop');
+const cancelNewFolderBtn = document.getElementById('cancelNewFolderBtn');
+const newFolderForm = document.getElementById('newFolderForm');
+const newFolderNameInput = document.getElementById('newFolderNameInput');
 
 // Security & Auth DOM Elements
 const securityBtn = document.getElementById('securityBtn');
@@ -140,6 +150,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initSecurity();
   initGalleryAndBatch();
   initLightbox();
+  initFolderHandlers();
   checkSecurityStatus();
   loadFiles();
   initUploadHandlers();
@@ -176,7 +187,8 @@ function initTabs() {
     }
   });
   downloadAllZipBtn?.addEventListener('click', () => {
-    window.location.href = '/api/zip';
+    const dirQuery = state.currentDir ? `?dir=${encodeURIComponent(state.currentDir)}` : '';
+    window.location.href = `/api/zip${dirQuery}`;
   });
   fileSearch?.addEventListener('input', filterFiles);
 
@@ -284,18 +296,69 @@ function handleWsMessage(msg) {
   }
 }
 
-// Files Handling
+// Files & Navigation Handling
+window.navigateToDir = function(relDir) {
+  state.currentDir = relDir || '';
+  state.selectedFiles.clear();
+  updateBatchUI();
+  loadFiles();
+};
+
+window.navigateToParentDir = function() {
+  if (!state.currentDir) return;
+  const parts = state.currentDir.split('/').filter(Boolean);
+  parts.pop();
+  window.navigateToDir(parts.join('/'));
+};
+
+function renderBreadcrumbs() {
+  if (!breadcrumbBar) return;
+
+  if (!state.currentDir) {
+    breadcrumbBar.innerHTML = '<span class="breadcrumb-item active" onclick="navigateToDir(\'\')">🏠 Ana Dizin</span>';
+    return;
+  }
+
+  const parts = state.currentDir.split('/').filter(Boolean);
+  let html = `<span class="breadcrumb-item" onclick="navigateToDir('')">🏠 Ana Dizin</span>`;
+
+  let accumulated = '';
+  parts.forEach((part, idx) => {
+    accumulated = accumulated ? `${accumulated}/${part}` : part;
+    const isLast = idx === parts.length - 1;
+    html += `<span class="breadcrumb-separator">/</span>`;
+    if (isLast) {
+      html += `<span class="breadcrumb-item active">${escapeHtml(part)}</span>`;
+    } else {
+      const targetDir = accumulated;
+      html += `<span class="breadcrumb-item" onclick="navigateToDir('${escapeJs(targetDir)}')">${escapeHtml(part)}</span>`;
+    }
+  });
+
+  breadcrumbBar.innerHTML = html;
+}
+
 async function loadFiles() {
   try {
     const headers = state.token ? { 'X-AirMesh-Token': state.token } : {};
-    const res = await fetch('/api/files', { headers });
+    const dirQuery = state.currentDir ? `?dir=${encodeURIComponent(state.currentDir)}` : '';
+    const res = await fetch(`/api/files${dirQuery}`, { headers });
     if (res.status === 401) {
       checkSecurityStatus();
       return;
     }
     if (!res.ok) throw new Error('Dosyalar alınamadı');
-    state.files = await res.json();
-    renderFiles(state.files);
+    const data = await res.json();
+    if (data && typeof data === 'object' && Array.isArray(data.files)) {
+      state.currentDir = data.currentDir || '';
+      state.files = data.files || [];
+    } else if (Array.isArray(data)) {
+      state.files = data;
+    } else {
+      state.files = [];
+    }
+    renderBreadcrumbs();
+    renderFiles(getFilteredFiles());
   } catch (err) {
     filesList.innerHTML = `
       <div class="empty-state">
@@ -319,8 +382,15 @@ function isAudioFile(name) {
 
 function getFilteredFiles() {
   const query = fileSearch?.value?.toLowerCase().trim() || '';
-  if (!query) return state.files;
-  return state.files.filter(f => f.name.toLowerCase().includes(query));
+  let list = state.files || [];
+  if (query) {
+    list = list.filter(f => f.name.toLowerCase().includes(query));
+  }
+  return list.slice().sort((a, b) => {
+    if (a.isDir && !b.isDir) return -1;
+    if (!a.isDir && b.isDir) return 1;
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  });
 }
 
 function filterFiles() {
@@ -330,29 +400,63 @@ function filterFiles() {
 function renderFiles(files) {
   if (!files || files.length === 0) {
     filesList.classList.remove('gallery-view');
-    filesList.innerHTML = `
-      <div class="empty-state">
-        <div class="empty-icon">📭</div>
-        <p>Henüz paylaşılan bir dosya yok.<br>İlk dosyayı sen yükleyebilirsin!</p>
-      </div>`;
+    if (state.currentDir) {
+      filesList.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">📁</div>
+          <p>Bu klasör henüz boş.</p>
+          <button class="action-btn-sm" style="margin-top: 10px;" onclick="navigateToParentDir()">⬆️ Bir Üst Dizine Çık</button>
+        </div>`;
+    } else {
+      filesList.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">📭</div>
+          <p>Henüz paylaşılan bir dosya yok.<br>İlk dosyayı sen yükleyebilirsin!</p>
+        </div>`;
+    }
     return;
   }
+
+  const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
 
   if (state.viewMode === 'gallery') {
     filesList.classList.add('gallery-view');
     filesList.innerHTML = files.map(file => {
+      const isSelected = state.selectedFiles.has(file.name);
+      const encodedName = encodeURIComponent(file.name);
+
+      if (file.isDir) {
+        const subPath = state.currentDir ? `${state.currentDir}/${file.name}` : file.name;
+        const encodedSubPath = encodeURIComponent(subPath);
+        return `
+          <div class="file-card is-directory ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
+            <input type="checkbox" class="card-checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleSelectFile('${encodedName}', this.checked)">
+            <div class="card-thumb-wrapper" onclick="navigateToDir('${escapeJs(subPath)}')">
+              <div class="card-placeholder-icon">📁</div>
+              <span class="card-badge" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);">Klasör</span>
+            </div>
+            <div class="card-body">
+              <div class="card-title" title="${escapeHtml(file.name)}" onclick="navigateToDir('${escapeJs(subPath)}')">${escapeHtml(file.name)}</div>
+              <div class="card-meta">Klasör • ${file.modTime || ''}</div>
+              <div class="card-actions">
+                <a class="btn-icon-action" title="Klasörü ZIP Olarak İndir" href="/api/zip?dir=${encodedSubPath}">📦 ZIP</a>
+                ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" title="Sil" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}', true)">🗑️</button>` : ''}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
       const isImg = isImageFile(file.name);
       const isVideo = isVideoFile(file.name);
       const isAudio = isAudioFile(file.name);
       const isMedia = isVideo || isAudio;
-      const isSelected = state.selectedFiles.has(file.name);
-      const encodedName = encodeURIComponent(file.name);
 
       let thumbHtml = '';
       if (isImg) {
         thumbHtml = `
           <div class="card-thumb-wrapper" onclick="openLightbox('${encodedName}')">
-            <img class="card-thumb-img" src="/api/stream?file=${encodedName}" alt="${escapeHtml(file.name)}" loading="lazy">
+            <img class="card-thumb-img" src="/api/stream?file=${encodedName}${dirQuery}" alt="${escapeHtml(file.name)}" loading="lazy">
             <span class="card-badge">Resim</span>
           </div>`;
       } else if (isVideo) {
@@ -384,8 +488,8 @@ function renderFiles(files) {
             <div class="card-actions">
               ${isAudio ? `<button class="btn-icon-action" title="Odada Çal" onclick="syncPlayAudio('${encodedName}')">📻</button>` : ''}
               ${isMedia ? `<button class="btn-icon-action" title="İzle/Dinle" onclick="streamMedia('${encodedName}', '${isVideo ? 'video' : 'audio'}')">▶️</button>` : ''}
-              <a class="btn-icon-action" title="İndir" href="/api/download?file=${encodedName}" download="${escapeHtml(file.name)}">⬇️</a>
-              ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" title="Sil" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}')">🗑️</button>` : ''}
+              <a class="btn-icon-action" title="İndir" href="/api/download?file=${encodedName}${dirQuery}" download="${escapeHtml(file.name)}">⬇️</a>
+              ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" title="Sil" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}', false)">🗑️</button>` : ''}
             </div>
           </div>
         </div>
@@ -394,13 +498,35 @@ function renderFiles(files) {
   } else {
     filesList.classList.remove('gallery-view');
     filesList.innerHTML = files.map(file => {
+      const isSelected = state.selectedFiles.has(file.name);
+      const encodedName = encodeURIComponent(file.name);
+
+      if (file.isDir) {
+        const subPath = state.currentDir ? `${state.currentDir}/${file.name}` : file.name;
+        const encodedSubPath = encodeURIComponent(subPath);
+        return `
+          <div class="file-item is-directory ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
+            <div class="file-info" onclick="navigateToDir('${escapeJs(subPath)}')">
+              <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''} onclick="event.stopPropagation()" onchange="toggleSelectFile('${encodedName}', this.checked)">
+              <div class="file-icon">📁</div>
+              <div class="file-details">
+                <div class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</div>
+                <div class="file-meta">Klasör • ${file.modTime || ''}</div>
+              </div>
+            </div>
+            <div class="file-actions">
+              <a class="btn-icon-action" href="/api/zip?dir=${encodedSubPath}" title="Klasörü ZIP Olarak İndir">📦 ZIP</a>
+              ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}', true)">🗑️ Sil</button>` : ''}
+            </div>
+          </div>
+        `;
+      }
+
       const isVideo = isVideoFile(file.name);
       const isAudio = isAudioFile(file.name);
       const isMedia = isVideo || isAudio;
       const isImg = isImageFile(file.name);
       const fileIcon = getFileIcon(file.name, file.isDir);
-      const isSelected = state.selectedFiles.has(file.name);
-      const encodedName = encodeURIComponent(file.name);
 
       return `
         <div class="file-item ${isSelected ? 'selected' : ''}" data-file="${escapeHtml(file.name)}">
@@ -416,8 +542,8 @@ function renderFiles(files) {
             ${isAudio ? `<button class="btn-icon-action" onclick="syncPlayAudio('${encodedName}')">📻 Odada Çal</button>` : ''}
             ${isMedia ? `<button class="btn-icon-action" onclick="streamMedia('${encodedName}', '${isVideo ? 'video' : 'audio'}')">▶️ İzle</button>` : ''}
             ${isImg ? `<button class="btn-icon-action" onclick="openLightbox('${encodedName}')">👁️ Önizle</button>` : ''}
-            <a class="btn-icon-action" href="/api/download?file=${encodedName}" download="${escapeHtml(file.name)}">⬇️ İndir</a>
-            ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}')">🗑️</button>` : ''}
+            <a class="btn-icon-action" href="/api/download?file=${encodedName}${dirQuery}" download="${escapeHtml(file.name)}">⬇️ İndir</a>
+            ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}', false)">🗑️ Sil</button>` : ''}
           </div>
         </div>
       `;
@@ -504,7 +630,8 @@ function initGalleryAndBatch() {
       return;
     }
     const filesQuery = Array.from(state.selectedFiles).map(encodeURIComponent).join(',');
-    window.location.href = `/api/zip?files=${filesQuery}`;
+    const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+    window.location.href = `/api/zip?files=${filesQuery}${dirQuery}`;
   });
 
   deleteSelectedBtn?.addEventListener('click', async () => {
@@ -513,13 +640,17 @@ function initGalleryAndBatch() {
       showToast('Lütfen silinecek dosyaları seçin', 'info');
       return;
     }
-    if (!confirm(`Seçilen ${count} dosyayı silmek istediğinize emin misiniz?`)) return;
+    if (!confirm(`Seçilen ${count} öğeyi silmek istediğinize emin misiniz?`)) return;
 
     try {
       const filesQuery = Array.from(state.selectedFiles).map(encodeURIComponent).join(',');
-      const res = await fetch(`/api/delete?files=${filesQuery}`, { method: 'POST' });
+      const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+      const res = await fetch(`/api/delete?files=${filesQuery}${dirQuery}`, {
+        method: 'POST',
+        headers: state.token ? { 'X-AirMesh-Token': state.token } : {}
+      });
       if (res.ok) {
-        showToast(`🗑️ ${count} dosya başarıyla silindi`, 'info');
+        showToast(`🗑️ ${count} öğe başarıyla silindi`, 'info');
         state.selectedFiles.clear();
         state.batchMode = false;
         batchSelectModeBtn?.classList.remove('active');
@@ -538,9 +669,10 @@ function initGalleryAndBatch() {
 window.openLightbox = function(encodedName) {
   const fileName = decodeURIComponent(encodedName);
   if (!lightboxModal) return;
-  lightboxImg.src = `/api/stream?file=${encodedName}`;
+  const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+  lightboxImg.src = `/api/stream?file=${encodedName}${dirQuery}`;
   lightboxTitle.textContent = fileName;
-  lightboxDownloadBtn.href = `/api/download?file=${encodedName}`;
+  lightboxDownloadBtn.href = `/api/download?file=${encodedName}${dirQuery}`;
   lightboxDownloadBtn.setAttribute('download', fileName);
   lightboxModal.classList.add('active');
 };
@@ -565,13 +697,10 @@ function initLightbox() {
   });
 }
 
-function filterFiles() {
-  renderFiles(getFilteredFiles());
-}
-
 window.syncPlayAudio = function(encodedName) {
   const fileName = decodeURIComponent(encodedName);
-  const streamUrl = `/api/stream?file=${encodedName}`;
+  const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+  const streamUrl = `/api/stream?file=${encodedName}${dirQuery}`;
   setupSyncTrack(streamUrl, fileName);
   if (state.ws && state.ws.readyState === WebSocket.OPEN) {
     state.ws.send(JSON.stringify({
@@ -613,7 +742,8 @@ function getFileIcon(name, isDir) {
 // Media Streaming Preview
 window.streamMedia = function(fileName, type) {
   modalMediaTitle.textContent = decodeURIComponent(fileName);
-  const streamUrl = `/api/stream?file=${fileName}`;
+  const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+  const streamUrl = `/api/stream?file=${fileName}${dirQuery}`;
   
   if (type === 'video') {
     modalMediaBody.innerHTML = `<video src="${streamUrl}" controls autoplay playsinline style="max-height: 70vh;"></video>`;
@@ -651,14 +781,72 @@ function initUploadHandlers() {
     dropzone.addEventListener(eventName, () => dropzone.classList.remove('dragover'), false);
   });
 
-  dropzone.addEventListener('drop', (e) => {
+  dropzone.addEventListener('drop', async (e) => {
+    const items = e.dataTransfer.items;
+    if (items && items.length > 0 && items[0].webkitGetAsEntry) {
+      const filesToUpload = [];
+      const entries = [];
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry();
+        if (entry) entries.push(entry);
+      }
+      if (entries.length > 0) {
+        await traverseFileTree(entries, filesToUpload);
+        if (filesToUpload.length > 0) {
+          handleUploadFiles(filesToUpload);
+          return;
+        }
+      }
+    }
     const files = e.dataTransfer.files;
     handleUploadFiles(files);
   });
 
-  fileInput.addEventListener('change', () => {
+  fileInput?.addEventListener('change', () => {
     handleUploadFiles(fileInput.files);
   });
+
+  folderInput?.addEventListener('change', () => {
+    handleUploadFiles(folderInput.files);
+  });
+}
+
+async function traverseFileTree(entries, resultFiles) {
+  for (const entry of entries) {
+    if (entry.isFile) {
+      await new Promise((resolve) => {
+        entry.file(f => {
+          const relPath = entry.fullPath ? entry.fullPath.replace(/^\//, '') : f.name;
+          Object.defineProperty(f, 'relativePath', {
+            value: relPath,
+            configurable: true
+          });
+          resultFiles.push(f);
+          resolve();
+        }, () => resolve());
+      });
+    } else if (entry.isDirectory) {
+      const dirReader = entry.createReader();
+      const readAllEntries = () => {
+        return new Promise((resolve) => {
+          const entriesBatch = [];
+          const read = () => {
+            dirReader.readEntries((res) => {
+              if (!res.length) {
+                resolve(entriesBatch);
+              } else {
+                entriesBatch.push(...res);
+                read();
+              }
+            }, () => resolve(entriesBatch));
+          };
+          read();
+        });
+      };
+      const subEntries = await readAllEntries();
+      await traverseFileTree(subEntries, resultFiles);
+    }
+  }
 }
 
 function handleUploadFiles(files) {
@@ -676,13 +864,14 @@ function handleUploadFiles(files) {
 
 function uploadSingleFile(file) {
   const uploadId = 'up_' + Math.random().toString(36).substring(2, 9);
+  const uploadName = file.relativePath || file.webkitRelativePath || file.name;
   
   const card = document.createElement('div');
   card.className = 'upload-progress-card';
   card.id = uploadId;
   card.innerHTML = `
     <div class="progress-header">
-      <span class="file-name" style="max-width: 280px;">${escapeHtml(file.name)}</span>
+      <span class="file-name" style="max-width: 280px;" title="${escapeHtml(uploadName)}">${escapeHtml(uploadName)}</span>
       <span class="upload-percent">0%</span>
     </div>
     <div class="progress-bar-bg">
@@ -744,7 +933,8 @@ function uploadSingleFile(file) {
     percentText.style.color = '#ef4444';
   });
 
-  xhr.open('POST', `/api/upload?name=${encodeURIComponent(file.name)}&uploader=${encodeURIComponent(state.deviceName)}`, true);
+  const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+  xhr.open('POST', `/api/upload?name=${encodeURIComponent(uploadName)}${dirQuery}&uploader=${encodeURIComponent(state.deviceName)}`, true);
   if (state.token) {
     xhr.setRequestHeader('X-AirMesh-Token', state.token);
   }
@@ -949,17 +1139,22 @@ function escapeJs(str) {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n');
 }
 
-// File Deletion
-window.deleteFile = async function(encodedName) {
+// File & Folder Deletion
+window.deleteFile = async function(encodedName, isFolder = false) {
   const fileName = decodeURIComponent(encodedName);
-  if (!confirm(`"${fileName}" dosyasını silmek istediğinize emin misiniz?`)) return;
+  const typeText = isFolder ? 'klasörünü ve içindeki tüm dosyaları' : 'dosyasını';
+  if (!confirm(`"${fileName}" ${typeText} silmek istediğinize emin misiniz?`)) return;
   try {
-    const res = await fetch(`/api/delete?file=${encodedName}`, { method: 'POST' });
+    const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+    const res = await fetch(`/api/delete?file=${encodedName}${dirQuery}`, {
+      method: 'POST',
+      headers: state.token ? { 'X-AirMesh-Token': state.token } : {}
+    });
     if (res.ok) {
       showToast(`🗑️ "${fileName}" silindi`, 'info');
       loadFiles();
     } else {
-      showToast('Hata: Dosya silinemedi', 'error');
+      showToast('Hata: Silme işlemi başarısız', 'error');
     }
   } catch (e) {
     showToast('Bağlantı hatası', 'error');
@@ -1326,3 +1521,51 @@ function initSecurity() {
     }
   });
 }
+
+// Folder Management (Mkdir & Navigation)
+function initFolderHandlers() {
+  function openModal() {
+    if (!newFolderModal) return;
+    newFolderModal.classList.add('active');
+    if (newFolderNameInput) {
+      newFolderNameInput.value = '';
+      setTimeout(() => newFolderNameInput.focus(), 150);
+    }
+  }
+
+  function closeModal() {
+    if (!newFolderModal) return;
+    newFolderModal.classList.remove('active');
+  }
+
+  newFolderBtn?.addEventListener('click', openModal);
+  newFolderCloseBtn?.addEventListener('click', closeModal);
+  newFolderBackdrop?.addEventListener('click', closeModal);
+  cancelNewFolderBtn?.addEventListener('click', closeModal);
+
+  newFolderForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = newFolderNameInput?.value?.trim();
+    if (!name) return;
+
+    try {
+      const dirQuery = state.currentDir ? `&dir=${encodeURIComponent(state.currentDir)}` : '';
+      const res = await fetch(`/api/mkdir?name=${encodeURIComponent(name)}${dirQuery}`, {
+        method: 'POST',
+        headers: state.token ? { 'X-AirMesh-Token': state.token } : {}
+      });
+
+      if (res.ok) {
+        closeModal();
+        showToast(`📁 "${name}" klasörü oluşturuldu`, 'success');
+        loadFiles();
+      } else {
+        const err = await res.text();
+        showToast(err || 'Klasör oluşturulamadı', 'error');
+      }
+    } catch (err) {
+      showToast('Bağlantı hatası', 'error');
+    }
+  });
+}
+
