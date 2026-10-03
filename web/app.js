@@ -9,7 +9,14 @@ const state = {
   isPlayingSync: false,
   viewMode: localStorage.getItem('airmesh_view_mode') || 'list',
   batchMode: false,
-  selectedFiles: new Set()
+  selectedFiles: new Set(),
+  isAdmin: false,
+  isAuth: true,
+  pinEnabled: false,
+  pinCode: '',
+  readOnly: false,
+  allowDelete: false,
+  token: localStorage.getItem('airmesh_token') || ''
 };
 
 function getRandomDeviceName() {
@@ -50,6 +57,22 @@ const qrImage = document.getElementById('qrImage');
 const qrUrlText = document.getElementById('qrUrlText');
 const downloadAllZipBtn = document.getElementById('downloadAllZipBtn');
 const toastContainer = document.getElementById('toastContainer');
+
+// Security & Auth DOM Elements
+const securityBtn = document.getElementById('securityBtn');
+const securityModal = document.getElementById('securityModal');
+const securityCloseBtn = document.getElementById('securityCloseBtn');
+const securityBackdrop = document.getElementById('securityBackdrop');
+const secPinToggle = document.getElementById('secPinToggle');
+const secPinInputGroup = document.getElementById('secPinInputGroup');
+const secPinCodeInput = document.getElementById('secPinCodeInput');
+const secReadOnlyToggle = document.getElementById('secReadOnlyToggle');
+const secAllowDeleteToggle = document.getElementById('secAllowDeleteToggle');
+const saveSecurityBtn = document.getElementById('saveSecurityBtn');
+const pinModal = document.getElementById('pinModal');
+const pinForm = document.getElementById('pinForm');
+const pinInput = document.getElementById('pinInput');
+const pinErrorMsg = document.getElementById('pinErrorMsg');
 
 // Gallery, Batch & Lightbox DOM Elements
 const listViewBtn = document.getElementById('listViewBtn');
@@ -114,8 +137,10 @@ document.addEventListener('DOMContentLoaded', () => {
   initSpeedTest();
   initPWA();
   initWebSocket();
+  initSecurity();
   initGalleryAndBatch();
   initLightbox();
+  checkSecurityStatus();
   loadFiles();
   initUploadHandlers();
   initChat();
@@ -251,13 +276,23 @@ function handleWsMessage(msg) {
     case 'sync_play':
       handleSyncPlayAction(msg);
       break;
+    case 'security_config_updated':
+      checkSecurityStatus();
+      loadFiles();
+      showToast('🛡️ Oda güvenlik ayarları güncellendi', 'info');
+      break;
   }
 }
 
 // Files Handling
 async function loadFiles() {
   try {
-    const res = await fetch('/api/files');
+    const headers = state.token ? { 'X-AirMesh-Token': state.token } : {};
+    const res = await fetch('/api/files', { headers });
+    if (res.status === 401) {
+      checkSecurityStatus();
+      return;
+    }
     if (!res.ok) throw new Error('Dosyalar alınamadı');
     state.files = await res.json();
     renderFiles(state.files);
@@ -350,7 +385,7 @@ function renderFiles(files) {
               ${isAudio ? `<button class="btn-icon-action" title="Odada Çal" onclick="syncPlayAudio('${encodedName}')">📻</button>` : ''}
               ${isMedia ? `<button class="btn-icon-action" title="İzle/Dinle" onclick="streamMedia('${encodedName}', '${isVideo ? 'video' : 'audio'}')">▶️</button>` : ''}
               <a class="btn-icon-action" title="İndir" href="/api/download?file=${encodedName}" download="${escapeHtml(file.name)}">⬇️</a>
-              <button class="btn-icon-action" title="Sil" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}')">🗑️</button>
+              ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" title="Sil" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}')">🗑️</button>` : ''}
             </div>
           </div>
         </div>
@@ -382,7 +417,7 @@ function renderFiles(files) {
             ${isMedia ? `<button class="btn-icon-action" onclick="streamMedia('${encodedName}', '${isVideo ? 'video' : 'audio'}')">▶️ İzle</button>` : ''}
             ${isImg ? `<button class="btn-icon-action" onclick="openLightbox('${encodedName}')">👁️ Önizle</button>` : ''}
             <a class="btn-icon-action" href="/api/download?file=${encodedName}" download="${escapeHtml(file.name)}">⬇️ İndir</a>
-            <button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}')">🗑️</button>
+            ${(state.isAdmin || state.allowDelete) ? `<button class="btn-icon-action" style="color: var(--danger-color);" onclick="deleteFile('${encodedName}')">🗑️</button>` : ''}
           </div>
         </div>
       `;
@@ -408,6 +443,9 @@ function updateBatchUI() {
   }
   if (batchBar) {
     batchBar.style.display = (count > 0 || state.batchMode) ? 'flex' : 'none';
+  }
+  if (deleteSelectedBtn) {
+    deleteSelectedBtn.style.display = (state.isAdmin || state.allowDelete) ? 'inline-block' : 'none';
   }
   document.querySelectorAll('[data-file]').forEach(el => {
     const fn = el.getAttribute('data-file');
@@ -625,6 +663,10 @@ function initUploadHandlers() {
 
 function handleUploadFiles(files) {
   if (!files || files.length === 0) return;
+  if (state.readOnly && !state.isAdmin) {
+    showToast('🔒 Bu oda salt-okunur (read-only) modundadır. Dosya yüklenemez.', 'error');
+    return;
+  }
   uploadList.style.display = 'block';
 
   Array.from(files).forEach(file => {
@@ -693,7 +735,7 @@ function uploadSingleFile(file) {
     } else {
       percentText.textContent = 'Hata ❌';
       percentText.style.color = '#ef4444';
-      speedText.textContent = `Hata Kodu: ${xhr.status}`;
+      speedText.textContent = xhr.status === 403 ? 'Salt-Okunur Engeli' : `Hata Kodu: ${xhr.status}`;
     }
   });
 
@@ -703,6 +745,9 @@ function uploadSingleFile(file) {
   });
 
   xhr.open('POST', `/api/upload?name=${encodeURIComponent(file.name)}&uploader=${encodeURIComponent(state.deviceName)}`, true);
+  if (state.token) {
+    xhr.setRequestHeader('X-AirMesh-Token', state.token);
+  }
   xhr.send(file);
 }
 
@@ -1124,4 +1169,160 @@ async function runSpeedBenchmark() {
     startSpeedTestBtn.disabled = false;
     speedGauge?.classList.remove('running');
   }
+}
+
+// Room Security, PIN & Access Control
+async function checkSecurityStatus() {
+  try {
+    const headers = state.token ? { 'X-AirMesh-Token': state.token } : {};
+    const res = await fetch('/api/auth/status', { headers });
+    if (!res.ok) return;
+    const data = await res.json();
+
+    state.isAdmin = data.isAdmin;
+    state.isAuth = data.isAuth;
+    state.pinEnabled = data.pinEnabled;
+    state.readOnly = data.readOnly;
+    state.allowDelete = data.allowDelete;
+    if (data.pinCode) state.pinCode = data.pinCode;
+
+    // Show/hide Admin Security Button in header
+    if (securityBtn) {
+      securityBtn.style.display = state.isAdmin ? 'inline-flex' : 'none';
+      securityBtn.textContent = state.pinEnabled ? '🔒' : '🔓';
+      securityBtn.title = state.pinEnabled ? 'Oda Kilitli (PIN Aktif)' : 'Oda Açık (PIN Pasif)';
+    }
+
+    // Handle Guest Lockscreen (PIN Modal)
+    if (pinModal) {
+      if (!state.isAuth && state.pinEnabled) {
+        pinModal.classList.add('active');
+        if (pinInput) setTimeout(() => pinInput.focus(), 150);
+      } else {
+        pinModal.classList.remove('active');
+      }
+    }
+
+    // Adapt Upload Dropzone if Read-Only
+    if (dropzone) {
+      const hint = dropzone.querySelector('.upload-hint');
+      const dropHeader = dropzone.querySelector('h3');
+      if (state.readOnly && !state.isAdmin) {
+        dropzone.style.opacity = '0.6';
+        dropzone.style.cursor = 'not-allowed';
+        if (dropHeader) dropHeader.textContent = '🔒 Oda Salt-Okunur (Read-Only) Modunda';
+        if (hint) hint.textContent = 'Dosya yükleme oda yöneticisi tarafından kısıtlanmıştır.';
+      } else {
+        dropzone.style.opacity = '1';
+        dropzone.style.cursor = 'pointer';
+        if (dropHeader) dropHeader.textContent = 'Dosyaları Buraya Sürükle & Bırak';
+        if (hint) hint.textContent = 'Sıfır internet kotası • Doğrudan diske streaming • Yüksek hız';
+      }
+    }
+
+    // Re-render files with updated permissions (e.g. delete buttons visibility)
+    if (state.files && state.files.length > 0) {
+      renderFiles(getFilteredFiles());
+    }
+  } catch (e) {
+    console.error('Security status check error:', e);
+  }
+}
+
+window.submitPin = async function() {
+  const pin = pinInput?.value?.trim();
+  if (!pin) return;
+  if (pinErrorMsg) pinErrorMsg.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/auth/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: pin })
+    });
+
+    const data = await res.json();
+    if (res.ok && data.status === 'success') {
+      state.token = data.token;
+      localStorage.setItem('airmesh_token', data.token);
+      pinModal?.classList.remove('active');
+      showToast('✅ Odaya başarıyla giriş yapıldı!', 'success');
+      await checkSecurityStatus();
+      loadFiles();
+    } else {
+      if (pinErrorMsg) {
+        pinErrorMsg.textContent = data.message || 'Hatalı PIN kodu!';
+        pinErrorMsg.style.display = 'block';
+      }
+      if (pinInput) {
+        pinInput.value = '';
+        pinInput.focus();
+      }
+    }
+  } catch (e) {
+    showToast('Bağlantı hatası', 'error');
+  }
+};
+
+function initSecurity() {
+  // Pin Form Submit
+  pinForm?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    submitPin();
+  });
+
+  // Admin Security Modal
+  securityBtn?.addEventListener('click', () => {
+    if (secPinToggle) secPinToggle.checked = state.pinEnabled;
+    if (secPinInputGroup) secPinInputGroup.style.display = state.pinEnabled ? 'block' : 'none';
+    if (secPinCodeInput) secPinCodeInput.value = state.pinCode || '';
+    if (secReadOnlyToggle) secReadOnlyToggle.checked = state.readOnly;
+    if (secAllowDeleteToggle) secAllowDeleteToggle.checked = state.allowDelete;
+    securityModal?.classList.add('active');
+  });
+
+  securityCloseBtn?.addEventListener('click', () => securityModal?.classList.remove('active'));
+  securityBackdrop?.addEventListener('click', () => securityModal?.classList.remove('active'));
+
+  secPinToggle?.addEventListener('change', () => {
+    if (secPinInputGroup) secPinInputGroup.style.display = secPinToggle.checked ? 'block' : 'none';
+    if (secPinToggle.checked && secPinCodeInput && !secPinCodeInput.value) {
+      secPinCodeInput.value = Math.floor(1000 + Math.random() * 9000).toString();
+    }
+  });
+
+  saveSecurityBtn?.addEventListener('click', async () => {
+    const pinEnabled = secPinToggle?.checked || false;
+    const pinCode = secPinCodeInput?.value?.trim() || '';
+    const readOnly = secReadOnlyToggle?.checked || false;
+    const allowDelete = secAllowDeleteToggle?.checked || false;
+
+    if (pinEnabled && pinCode.length < 4) {
+      showToast('PIN kodu en az 4 haneli olmalıdır!', 'error');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/auth/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pinEnabled,
+          pinCode,
+          readOnly,
+          allowDelete
+        })
+      });
+
+      if (res.ok) {
+        showToast('🛡️ Güvenlik ayarları kaydedildi', 'success');
+        securityModal?.classList.remove('active');
+        await checkSecurityStatus();
+      } else {
+        showToast('Ayarlar kaydedilemedi', 'error');
+      }
+    } catch (e) {
+      showToast('Bağlantı hatası', 'error');
+    }
+  });
 }

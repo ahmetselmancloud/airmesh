@@ -45,6 +45,7 @@ type Server struct {
 	SharedDir string
 	WebFS     fs.FS
 	hub       *WSHub
+	sec       *SecurityManager
 }
 
 func NewServer(sharedDir string, webFS fs.FS) *Server {
@@ -52,6 +53,7 @@ func NewServer(sharedDir string, webFS fs.FS) *Server {
 		SharedDir: sharedDir,
 		WebFS:     webFS,
 		hub:       newWSHub(),
+		sec:       NewSecurityManager(),
 	}
 }
 
@@ -86,13 +88,57 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/speedtest/ping", s.handleSpeedtestPing)
 	mux.HandleFunc("/api/speedtest/download", s.handleSpeedtestDownload)
 	mux.HandleFunc("/api/speedtest/upload", s.handleSpeedtestUpload)
+	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("/api/auth/verify", s.handleAuthVerify)
+	mux.HandleFunc("/api/auth/config", s.handleAuthConfig)
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
 	// Static web assets from embedded filesystem
 	fileServer := http.FileServer(http.FS(s.WebFS))
 	mux.Handle("/", fileServer)
 
-	return s.withCORS(mux)
+	return s.withCORS(s.withSecurity(mux))
+}
+
+func (s *Server) withSecurity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// Exclude public assets & public auth endpoints
+		if path == "/" ||
+			path == "/index.html" ||
+			path == "/style.css" ||
+			path == "/app.js" ||
+			path == "/manifest.json" ||
+			path == "/sw.js" ||
+			path == "/favicon.ico" ||
+			path == "/generate_204" ||
+			path == "/gen_204" ||
+			path == "/hotspot-detect.html" ||
+			path == "/ncsi.txt" ||
+			path == "/connecttest.txt" ||
+			path == "/api/auth/status" ||
+			path == "/api/auth/verify" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Enforce PIN authentication if enabled
+		if !s.sec.CheckAuth(r) {
+			if strings.HasPrefix(path, "/api/") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"auth_required","message":"PIN kodu gereklidir."}`))
+				return
+			}
+			if path == "/ws" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) withCORS(next http.Handler) http.Handler {
@@ -213,6 +259,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Yalnızca POST desteklenir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !s.sec.IsAdmin(r) && s.sec.ReadOnly {
+		http.Error(w, "Oda salt-okunur (read-only) modundadır. Dosya yüklenemez.", http.StatusForbidden)
 		return
 	}
 
@@ -419,6 +470,11 @@ func (s *Server) handleHotspotQR(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Yalnızca POST desteklenir", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !s.sec.IsAdmin(r) && !s.sec.AllowDelete {
+		http.Error(w, "Dosya silme yetkiniz bulunmamaktadır.", http.StatusForbidden)
 		return
 	}
 

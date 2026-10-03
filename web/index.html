@@ -24,6 +24,7 @@
         </div>
       </div>
       <div class="header-stats">
+        <button id="securityBtn" class="icon-btn" title="Oda Güvenlik ve PIN Ayarları" style="display:none;">🔒</button>
         <button id="showQrBtn" class="icon-btn" title="QR Kodu Göster">📲</button>
         <span class="chip" id="deviceCountChip">👥 0 Cihaz</span>
         <button id="themeToggle" class="icon-btn" title="Tema Değiştir">🌓</button>
@@ -292,6 +293,84 @@
         <div style="margin-top: 12px; display: flex; justify-content: center; gap: 12px; align-items: center;">
           <span id="lightboxTitle" style="font-size: 13px; color: #fff; background: rgba(0,0,0,0.6); padding: 5px 14px; border-radius: 20px;"></span>
           <a id="lightboxDownloadBtn" class="btn-icon-action" href="" download="" style="background: var(--primary-color); color: #fff; border: none; padding: 6px 16px;">⬇️ İndir</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Room PIN Authentication Modal (Guests) -->
+    <div class="modal" id="pinModal">
+      <div class="modal-backdrop" style="background: rgba(10, 14, 23, 0.96); backdrop-filter: blur(16px);"></div>
+      <div class="modal-content" style="max-width: 380px; text-align: center; border: 1px solid var(--primary-color); box-shadow: 0 10px 40px rgba(0,0,0,0.8), 0 0 25px var(--primary-glow);">
+        <div style="font-size: 42px; margin-bottom: 8px;">🔒</div>
+        <h2 style="margin-bottom: 6px; font-size: 20px;">Oda Kilitli</h2>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 20px; line-height: 1.4;">
+          Bu yerel paylaşım odası PIN kodu ile korunmaktadır. Dosyalara erişmek için 4 haneli PIN kodunu girin.
+        </p>
+        <form id="pinForm">
+          <input type="password" id="pinInput" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="••••" style="font-size: 26px; letter-spacing: 10px; text-align: center; width: 180px; margin: 0 auto 14px auto; padding: 10px; border-radius: var(--radius-md); border: 2px solid var(--primary-color); background: rgba(0,0,0,0.3); color: #fff; display: block;">
+          <div id="pinErrorMsg" style="color: var(--danger-color); font-size: 12px; margin-bottom: 12px; display: none;">Hatalı PIN kodu!</div>
+          <button type="submit" class="btn-primary" style="width: 100%;">Giriş Yap</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Admin Security Settings Modal -->
+    <div class="modal" id="securityModal">
+      <div class="modal-backdrop" id="securityBackdrop"></div>
+      <div class="modal-content" style="max-width: 440px;">
+        <button class="modal-close" id="securityCloseBtn">✕</button>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+          <span style="font-size: 26px;">🛡️</span>
+          <h2 style="font-size: 18px;">Oda Güvenliği & İzinler</h2>
+        </div>
+        <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 18px; line-height: 1.4;">
+          Host (Yönetici) olarak bu ayarları değiştirebilirsiniz. Yapılan değişiklikler tüm bağlı cihazlara anında uygulanır.
+        </p>
+
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <!-- PIN Protection Toggle -->
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.03); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--surface-border);">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">PIN Koruması</div>
+              <div style="font-size: 11px; color: var(--text-muted);">Bağlanan misafirlerden PIN ister</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="secPinToggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <!-- PIN Code Input -->
+          <div id="secPinInputGroup" style="background: rgba(255,255,255,0.03); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--surface-border); display: none;">
+            <label style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px;">4 Haneli PIN Kodu</label>
+            <input type="text" id="secPinCodeInput" maxlength="6" placeholder="Örn: 1234" style="width: 100%; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px solid var(--surface-border); background: rgba(0,0,0,0.25); color: #fff; font-size: 15px; letter-spacing: 2px;">
+          </div>
+
+          <!-- Read-Only Mode Toggle -->
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.03); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--surface-border);">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Salt-Okunur (Read-Only) Modu</div>
+              <div style="font-size: 11px; color: var(--text-muted);">Misafirlerin dosya yüklemesini engeller</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="secReadOnlyToggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <!-- Allow Delete Toggle -->
+          <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.03); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--surface-border);">
+            <div>
+              <div style="font-weight: 600; font-size: 13px;">Misafirler Dosya Silebilir</div>
+              <div style="font-size: 11px; color: var(--text-muted);">Kapalıyken yalnızca Host silebilir</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="secAllowDeleteToggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <button id="saveSecurityBtn" class="btn-primary" style="margin-top: 6px;">Ayarları Kaydet</button>
         </div>
       </div>
     </div>
