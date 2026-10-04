@@ -112,6 +112,18 @@ func (s *Server) withSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
+		// Exclude captive portal probes from strict Host check because devices send captive.apple.com etc.
+		isCaptiveProbe := path == "/generate_204" || path == "/gen_204" ||
+			path == "/hotspot-detect.html" || path == "/ncsi.txt" || path == "/connecttest.txt"
+
+		if !isCaptiveProbe {
+			// DNS Rebinding protection: validate Host header
+			if !s.sec.IsValidHost(r.Host) {
+				http.Error(w, "Geçersiz Host başlığı (DNS Rebinding engellendi)", http.StatusBadRequest)
+				return
+			}
+		}
+
 		// Exclude public assets & public auth endpoints
 		if path == "/" ||
 			path == "/index.html" ||
@@ -120,11 +132,7 @@ func (s *Server) withSecurity(next http.Handler) http.Handler {
 			path == "/manifest.json" ||
 			path == "/sw.js" ||
 			path == "/favicon.ico" ||
-			path == "/generate_204" ||
-			path == "/gen_204" ||
-			path == "/hotspot-detect.html" ||
-			path == "/ncsi.txt" ||
-			path == "/connecttest.txt" ||
+			isCaptiveProbe ||
 			path == "/api/auth/status" ||
 			path == "/api/auth/verify" {
 			next.ServeHTTP(w, r)
@@ -151,9 +159,22 @@ func (s *Server) withSecurity(next http.Handler) http.Handler {
 
 func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if s.sec.IsAllowedOrigin(origin) {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-AirMesh-Token")
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			} else {
+				// Reject preflight for unauthorized cross-origin requests
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+			}
+		}
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -206,30 +227,50 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getSafeRelPath(relPath string) (string, error) {
 	clean := filepath.Clean(filepath.FromSlash(relPath))
+
 	absShared, err := filepath.Abs(s.SharedDir)
 	if err != nil {
 		absShared = s.SharedDir
 	}
+	realShared, err := filepath.EvalSymlinks(absShared)
+	if err != nil {
+		realShared = absShared
+	}
 
 	if clean == "." || clean == "/" || clean == "\\" || clean == "" {
-		return absShared, nil
+		return realShared, nil
 	}
 
 	if strings.HasPrefix(clean, "..") || strings.Contains(clean, "/../") || strings.Contains(clean, "\\..\\") {
 		return "", errors.New("geçersiz yol (path traversal engellendi)")
 	}
 
-	fullPath := filepath.Join(absShared, clean)
-	absTarget, err := filepath.Abs(fullPath)
-	if err != nil {
-		return "", errors.New("hedef yol çözülemedi")
+	fullPath := filepath.Join(realShared, clean)
+
+	// If file or target directory exists, resolve symlinks
+	targetPath := fullPath
+	if fi, err := os.Lstat(fullPath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(fullPath)
+			if err != nil {
+				return "", errors.New("sembolik link çözülemedi")
+			}
+			targetPath = resolved
+		}
+	} else {
+		// Target doesn't exist yet (e.g. upload or mkdir), evaluate parent dir
+		parentDir := filepath.Dir(fullPath)
+		if realParent, err := filepath.EvalSymlinks(parentDir); err == nil {
+			targetPath = filepath.Join(realParent, filepath.Base(fullPath))
+		}
 	}
 
-	if !strings.HasPrefix(absTarget, absShared) {
-		return "", errors.New("yetkisiz dizin erişimi engellendi")
+	rel, err := filepath.Rel(realShared, targetPath)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return "", errors.New("yetkisiz dizin erişimi engellendi (symlink veya path escape)")
 	}
 
-	return absTarget, nil
+	return targetPath, nil
 }
 
 func (s *Server) getSafeFilePath(fileName string) (string, error) {
@@ -406,6 +447,26 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, stat.Name(), stat.ModTime(), file)
 }
 
+// resolveUniqueFilePath checks if target exists and appends (1), (2) to prevent accidental data loss
+func resolveUniqueFilePath(fullPath string) string {
+	if _, err := os.Stat(fullPath); errors.Is(err, os.ErrNotExist) {
+		return fullPath
+	}
+
+	dir := filepath.Dir(fullPath)
+	base := filepath.Base(fullPath)
+	ext := filepath.Ext(base)
+	nameWithoutExt := strings.TrimSuffix(base, ext)
+
+	for i := 1; i < 10000; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", nameWithoutExt, i, ext))
+		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+			return candidate
+		}
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s_%d%s", nameWithoutExt, time.Now().UnixNano(), ext))
+}
+
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Yalnızca POST desteklenir", http.StatusMethodNotAllowed)
@@ -422,33 +483,44 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if fileName == "" {
 		// Try multipart header
 		err := r.ParseMultipartForm(32 << 20) // 32MB in RAM
-		if err == nil && r.MultipartForm != nil && len(r.MultipartForm.File) > 0 {
-			for _, headers := range r.MultipartForm.File {
-				for _, h := range headers {
-					src, err := h.Open()
-					if err != nil {
-						continue
-					}
-					relPath := filepath.Join(dirParam, h.Filename)
-					targetPath, err := s.getSafeRelPath(relPath)
-					if err != nil {
+		if err == nil && r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll() // Clean up temporary multipart files
+			if len(r.MultipartForm.File) > 0 {
+				for _, headers := range r.MultipartForm.File {
+					for _, h := range headers {
+						src, err := h.Open()
+						if err != nil {
+							continue
+						}
+						relPath := filepath.Join(dirParam, h.Filename)
+						targetPath, err := s.getSafeRelPath(relPath)
+						if err != nil {
+							_ = src.Close()
+							continue
+						}
+						_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
+
+						finalPath := resolveUniqueFilePath(targetPath)
+						tmpPath := finalPath + fmt.Sprintf(".tmp_%d", time.Now().UnixNano())
+						dst, err := os.Create(tmpPath)
+						if err == nil {
+							writer := bufio.NewWriterSize(dst, 4*1024*1024)
+							if _, err := io.Copy(writer, src); err == nil {
+								_ = writer.Flush()
+								_ = dst.Close()
+								_ = os.Rename(tmpPath, finalPath)
+							} else {
+								_ = dst.Close()
+								_ = os.Remove(tmpPath)
+							}
+						}
 						_ = src.Close()
-						continue
 					}
-					_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
-					dst, err := os.Create(targetPath)
-					if err == nil {
-						writer := bufio.NewWriterSize(dst, 4*1024*1024)
-						_, _ = io.Copy(writer, src)
-						_ = writer.Flush()
-						_ = dst.Close()
-					}
-					_ = src.Close()
 				}
+				s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
+				w.WriteHeader(http.StatusOK)
+				return
 			}
-			s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
-			w.WriteHeader(http.StatusOK)
-			return
 		}
 		http.Error(w, "Dosya adı belirtilmedi", http.StatusBadRequest)
 		return
@@ -462,44 +534,56 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = os.MkdirAll(filepath.Dir(fullPath), 0755)
 
+	finalPath := resolveUniqueFilePath(fullPath)
+	savedFileName := filepath.Base(finalPath)
+
 	uploader := r.URL.Query().Get("uploader")
 	if uploader == "" {
 		uploader = "Bir Cihaz"
 	}
 
-	// Direct streaming from body to disk with 4MB buffer (No memory bloat!)
-	outFile, err := os.Create(fullPath)
+	// Atomic writing: write to temporary file first, clean up on failure
+	tmpPath := finalPath + fmt.Sprintf(".tmp_%d", time.Now().UnixNano())
+	outFile, err := os.Create(tmpPath)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Dosya oluşturulamadı: %v", err), http.StatusInternalServerError)
 		return
 	}
-	defer outFile.Close()
 
 	bufWriter := bufio.NewWriterSize(outFile, 4*1024*1024) // 4MB buffer
 	_, err = io.Copy(bufWriter, r.Body)
 	if err != nil {
+		_ = outFile.Close()
+		_ = os.Remove(tmpPath) // Remove orphan partial file
 		http.Error(w, fmt.Sprintf("Yazma hatası: %v", err), http.StatusInternalServerError)
 		return
 	}
 	_ = bufWriter.Flush()
+	_ = outFile.Close()
+
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		http.Error(w, fmt.Sprintf("Dosya taşınamadı: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	// Broadcast upload notification and list refresh to all clients
 	toastPayload, _ := json.Marshal(map[string]interface{}{
 		"type":     "file_uploaded",
-		"fileName": fileName,
+		"fileName": savedFileName,
 		"uploader": uploader,
 	})
 	s.hub.broadcast(toastPayload)
 	s.hub.broadcast([]byte(`{"type":"file_list_updated"}`))
 
 	// Trigger native Windows Toast Notification
-	sendWindowsNotification("AirMesh - Yeni Dosya", fmt.Sprintf("%s (%s tarafından)", fileName, uploader))
+	sendWindowsNotification("AirMesh - Yeni Dosya", fmt.Sprintf("%s (%s tarafından)", savedFileName, uploader))
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"success"}`))
 }
 
-// On-the-fly streaming zip without buffering entire archive on disk or in RAM
+// On-the-fly streaming zip using zip.Store (zero CPU compression overhead for maximum transfer speed)
 func (s *Server) handleZipStream(w http.ResponseWriter, r *http.Request) {
 	dirParam := r.URL.Query().Get("dir")
 	targetDir, err := s.getSafeRelPath(dirParam)
@@ -567,7 +651,14 @@ func (s *Server) addFileOrDirToZip(zw *zip.Writer, absPath, relName string) {
 				return nil
 			}
 			defer f.Close()
-			w, err := zw.Create(zipEntryName)
+
+			header, err := zip.FileInfoHeader(fi)
+			if err != nil {
+				return nil
+			}
+			header.Name = zipEntryName
+			header.Method = zip.Store // Zero CPU, raw disk/network throughput!
+			w, err := zw.CreateHeader(header)
 			if err == nil {
 				_, _ = io.Copy(w, f)
 			}
@@ -579,7 +670,14 @@ func (s *Server) addFileOrDirToZip(zw *zip.Writer, absPath, relName string) {
 			return
 		}
 		defer f.Close()
-		w, err := zw.Create(filepath.ToSlash(relName))
+
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			return
+		}
+		header.Name = filepath.ToSlash(relName)
+		header.Method = zip.Store // Zero CPU, raw disk/network throughput!
+		w, err := zw.CreateHeader(header)
 		if err == nil {
 			_, _ = io.Copy(w, f)
 		}
@@ -610,6 +708,12 @@ func (s *Server) handleRadar(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHotspot(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
+		// Only host admin can toggle hotspot
+		if !s.sec.IsAdmin(r) {
+			http.Error(w, "Yalnızca Host bilgisayar Hotspot açıp kapatabilir", http.StatusForbidden)
+			return
+		}
+
 		action := r.URL.Query().Get("action")
 		if action == "start" {
 			_ = ToggleHotspot(true)
@@ -796,6 +900,7 @@ func (h *WSHub) register(c *WSClient) {
 	h.broadcastDeviceList()
 	if len(lastSync) > 0 {
 		frame := encodeWSTextFrame(lastSync)
+		_ = c.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 		_, _ = c.conn.Write(frame)
 	}
 	_ = count
@@ -810,7 +915,10 @@ func (h *WSHub) unregister(c *WSClient) {
 			h.emptyTimer.Stop()
 		}
 		h.emptyTimer = time.AfterFunc(5*time.Minute, func() {
-			fmt.Println("\n💤 [Akıllı Güç Tasarrufu] 5 dakikadır bağlı alıcı cihaz bulunamadı. Bekleme modunda.")
+			fmt.Println("\n💤 [Akıllı Güç Tasarrufu] 5 dakikadır bağlı alıcı cihaz bulunamadı. Hotspot kapatılıyor...")
+			if runtime.GOOS == "windows" {
+				_ = ToggleHotspot(false)
+			}
 		})
 	}
 	h.mu.Unlock()
@@ -833,8 +941,18 @@ func (h *WSHub) broadcast(msg []byte) {
 	defer h.mu.Unlock()
 
 	frame := encodeWSTextFrame(msg)
+	var deadClients []*WSClient
 	for client := range h.clients {
-		_, _ = client.conn.Write(frame)
+		// Set short write deadline so slow or hung clients never block the server broadcast
+		_ = client.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		if _, err := client.conn.Write(frame); err != nil {
+			deadClients = append(deadClients, client)
+		}
+	}
+
+	for _, dc := range deadClients {
+		delete(h.clients, dc)
+		_ = dc.conn.Close()
 	}
 }
 
@@ -870,13 +988,16 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
 		"Sec-WebSocket-Accept: " + accept + "\r\n\r\n"
-	_, _ = bufrw.WriteString(res)
-	_ = bufrw.Flush()
-
-	clientIP := r.RemoteAddr
-	if colonIdx := strings.LastIndex(clientIP, ":"); colonIdx != -1 {
-		clientIP = clientIP[:colonIdx]
+	if _, err := bufrw.WriteString(res); err != nil {
+		_ = conn.Close()
+		return
 	}
+	if err := bufrw.Flush(); err != nil {
+		_ = conn.Close()
+		return
+	}
+
+	clientIP := GetClientIP(r)
 
 	client := &WSClient{
 		conn:        conn,
@@ -886,6 +1007,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		ip:          clientIP,
 		userAgent:   r.UserAgent(),
 		connectedAt: time.Now(),
+	}
+
+	if client.name == "" {
+		client.name = "Misafir Cihaz"
 	}
 
 	s.hub.register(client)
@@ -901,12 +1026,20 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if len(msg) > 0 {
-			if strings.Contains(string(msg), `"type":"sync_play"`) {
-				s.hub.mu.Lock()
-				s.hub.lastSyncMsg = msg
-				s.hub.mu.Unlock()
+			var baseMsg struct {
+				Type string `json:"type"`
 			}
-			s.hub.broadcast(msg)
+			if err := json.Unmarshal(msg, &baseMsg); err == nil {
+				// Only permit client-originated actions (chat, sync_play); block spoofed internal server events
+				if baseMsg.Type == "chat" || baseMsg.Type == "sync_play" || baseMsg.Type == "sync_play_track" {
+					if baseMsg.Type == "sync_play" || baseMsg.Type == "sync_play_track" {
+						s.hub.mu.Lock()
+						s.hub.lastSyncMsg = msg
+						s.hub.mu.Unlock()
+					}
+					s.hub.broadcast(msg)
+				}
+			}
 		}
 	}
 }
@@ -940,6 +1073,12 @@ func readWSFrame(r *bufio.ReadWriter) ([]byte, error) {
 			return nil, err
 		}
 		payloadLen = int64(l)
+	}
+
+	// Frame size limit (Max 1 MB) to prevent OOM attacks
+	const maxWSFrameSize = 1024 * 1024
+	if payloadLen > maxWSFrameSize || payloadLen < 0 {
+		return nil, fmt.Errorf("WebSocket çerçevesi çok büyük (%d bayt, limit: 1MB)", payloadLen)
 	}
 
 	var maskKey [4]byte
@@ -985,6 +1124,11 @@ func encodeWSTextFrame(data []byte) []byte {
 }
 
 func (s *Server) handleOpenFolder(w http.ResponseWriter, r *http.Request) {
+	if !s.sec.IsAdmin(r) {
+		http.Error(w, "Yalnızca Host bilgisayar klasör açabilir", http.StatusForbidden)
+		return
+	}
+
 	absPath, err := filepath.Abs(s.SharedDir)
 	if err != nil {
 		absPath = s.SharedDir

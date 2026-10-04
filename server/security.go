@@ -2,14 +2,23 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+type pinAttempt struct {
+	count       int
+	lastAttempt time.Time
+	lockedUntil time.Time
+}
 
 type SecurityManager struct {
 	sync.RWMutex
@@ -18,29 +27,116 @@ type SecurityManager struct {
 	ReadOnly    bool                 `json:"readOnly"`
 	AllowDelete bool                 `json:"allowDelete"`
 	tokens      map[string]time.Time
+	attempts    map[string]*pinAttempt
 }
 
 func NewSecurityManager() *SecurityManager {
-	return &SecurityManager{
+	sm := &SecurityManager{
 		PinEnabled:  false,
 		PinCode:     "",
 		ReadOnly:    false,
 		AllowDelete: false, // Default: misafirler dosya silemez
 		tokens:      make(map[string]time.Time),
+		attempts:    make(map[string]*pinAttempt),
+	}
+
+	// Periodic token & attempt pruning
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		for range ticker.C {
+			sm.pruneExpired()
+		}
+	}()
+
+	return sm
+}
+
+func (sm *SecurityManager) pruneExpired() {
+	sm.Lock()
+	defer sm.Unlock()
+
+	now := time.Now()
+	for t, exp := range sm.tokens {
+		if now.After(exp) {
+			delete(sm.tokens, t)
+		}
+	}
+
+	for ip, att := range sm.attempts {
+		if now.Sub(att.lastAttempt) > 15*time.Minute && now.After(att.lockedUntil) {
+			delete(sm.attempts, ip)
+		}
 	}
 }
 
-// IsAdmin checks if request originates from localhost / host machine
-func (sm *SecurityManager) IsAdmin(r *http.Request) bool {
+// GetClientIP extracts IP address safely supporting both IPv4 and IPv6
+func GetClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	ip := net.ParseIP(host)
+	return strings.Trim(host, "[]")
+}
+
+// IsValidHost verifies Host header to prevent DNS Rebinding attacks
+func (sm *SecurityManager) IsValidHost(hostHeader string) bool {
+	if hostHeader == "" {
+		return false
+	}
+
+	h, _, err := net.SplitHostPort(hostHeader)
+	if err != nil {
+		h = hostHeader
+	}
+	h = strings.Trim(strings.ToLower(h), "[]")
+
+	if h == "localhost" || h == "127.0.0.1" || h == "::1" {
+		return true
+	}
+
+	// Check if IP is valid local / private address
+	ip := net.ParseIP(h)
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return true
+		}
+	}
+
+	// Check if host matches any local network interface IP
+	localIPs, err := GetLocalIPs()
+	if err == nil {
+		for _, lip := range localIPs {
+			if h == strings.ToLower(lip) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// IsAllowedOrigin checks if incoming Origin is trusted
+func (sm *SecurityManager) IsAllowedOrigin(originHeader string) bool {
+	if originHeader == "" {
+		return true
+	}
+
+	u, err := url.Parse(originHeader)
+	if err != nil {
+		return false
+	}
+
+	return sm.IsValidHost(u.Host)
+}
+
+// IsAdmin checks if request originates from localhost / host machine
+func (sm *SecurityManager) IsAdmin(r *http.Request) bool {
+	clientIP := GetClientIP(r)
+	ip := net.ParseIP(clientIP)
 	if ip != nil && ip.IsLoopback() {
 		return true
 	}
-	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+	return clientIP == "localhost" || clientIP == "127.0.0.1" || clientIP == "::1"
 }
 
 // CheckAuth checks if caller is authenticated (Admin or valid PIN session)
@@ -78,18 +174,49 @@ func (sm *SecurityManager) CheckAuth(r *http.Request) bool {
 	return true
 }
 
-func (sm *SecurityManager) VerifyPin(pin string) (string, bool) {
+// VerifyPin handles constant-time PIN comparison and IP-based rate limiting
+func (sm *SecurityManager) VerifyPin(clientIP, pin string) (string, bool, string) {
 	sm.Lock()
 	defer sm.Unlock()
 
-	if !sm.PinEnabled || pin == sm.PinCode {
+	now := time.Now()
+	att, exists := sm.attempts[clientIP]
+	if !exists {
+		att = &pinAttempt{}
+		sm.attempts[clientIP] = att
+	}
+
+	// Check if IP is currently locked out
+	if now.Before(att.lockedUntil) {
+		waitSec := int(time.Until(att.lockedUntil).Seconds())
+		return "", false, fmt.Sprintf("Çok fazla hatalı deneme! Lütfen %d saniye bekleyin.", waitSec)
+	}
+
+	// Constant-time check
+	pinMatch := subtle.ConstantTimeCompare([]byte(pin), []byte(sm.PinCode)) == 1
+	if !sm.PinEnabled || pinMatch {
+		// Reset failure counter on success
+		att.count = 0
+		att.lockedUntil = time.Time{}
+
 		tokenBytes := make([]byte, 16)
 		_, _ = rand.Read(tokenBytes)
 		token := hex.EncodeToString(tokenBytes)
-		sm.tokens[token] = time.Now().Add(24 * time.Hour)
-		return token, true
+		sm.tokens[token] = now.Add(24 * time.Hour)
+		return token, true, ""
 	}
-	return "", false
+
+	// Failed attempt
+	att.count++
+	att.lastAttempt = now
+
+	if att.count >= 5 {
+		att.lockedUntil = now.Add(2 * time.Minute)
+		return "", false, "Çok fazla hatalı PIN denemesi! 2 dakika boyunca giriş kilitlendi."
+	}
+
+	kalan := 5 - att.count
+	return "", false, fmt.Sprintf("Hatalı PIN kodu! (Kalan deneme hakkı: %d)", kalan)
 }
 
 func (sm *SecurityManager) UpdateConfig(pinEnabled bool, pinCode string, readOnly, allowDelete bool) {
@@ -105,6 +232,7 @@ func (sm *SecurityManager) UpdateConfig(pinEnabled bool, pinCode string, readOnl
 
 	if !sm.PinEnabled {
 		sm.tokens = make(map[string]time.Time)
+		sm.attempts = make(map[string]*pinAttempt)
 	}
 }
 
@@ -154,13 +282,14 @@ func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, ok := s.sec.VerifyPin(strings.TrimSpace(req.Pin))
+	clientIP := GetClientIP(r)
+	token, ok, errMsg := s.sec.VerifyPin(clientIP, strings.TrimSpace(req.Pin))
 	if !ok {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status":  "error",
-			"message": "Hatalı PIN kodu. Lütfen tekrar deneyin.",
+			"message": errMsg,
 		})
 		return
 	}
@@ -170,7 +299,7 @@ func (s *Server) handleAuthVerify(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		Expires:  time.Now().Add(24 * time.Hour),
-		HttpOnly: false,
+		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
 

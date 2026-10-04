@@ -5,10 +5,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
 )
 
 // CaptiveDNSServer handles captive portal detection probes
 type CaptiveDNSServer struct {
+	sync.RWMutex
 	TargetIP net.IP
 	conn     *net.UDPConn
 	running  bool
@@ -28,7 +30,7 @@ func StartCaptiveDNS(targetIPStr string) (*CaptiveDNSServer, error) {
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("port 53 açılamadı (yönetici yetkisi gerekebilir): %w", err)
+		return nil, fmt.Errorf("port 53 açılamadı (yönetici yetkisi veya ICS meşgul olabilir): %w", err)
 	}
 
 	server := &CaptiveDNSServer{
@@ -39,6 +41,14 @@ func StartCaptiveDNS(targetIPStr string) (*CaptiveDNSServer, error) {
 
 	go server.listen()
 	return server, nil
+}
+
+func (s *CaptiveDNSServer) SetTargetIP(newIP net.IP) {
+	s.Lock()
+	defer s.Unlock()
+	if ipv4 := newIP.To4(); ipv4 != nil {
+		s.TargetIP = ipv4
+	}
 }
 
 func (s *CaptiveDNSServer) Stop() {
@@ -99,10 +109,21 @@ func (s *CaptiveDNSServer) createDNSResponse(req []byte) []byte {
 	qType := binary.BigEndian.Uint16(req[idx : idx+2])
 	idx += 4 // QTYPE (2) + QCLASS (2)
 
-	// If not Type A (1), return standard no-data
+	// If not Type A (1) (e.g. AAAA for IPv6 = 28, TXT = 16, HTTPS = 65, etc.):
+	// Return valid empty NOERROR response (ANCOUNT=0)
+	// This immediately tells client devices that no record exists instead of timing out!
 	if qType != 1 {
-		return nil
+		var noErrRes bytes.Buffer
+		noErrRes.Write(txID)
+		noErrRes.Write([]byte{0x81, 0x80})                                     // Standard Response, No Error
+		noErrRes.Write([]byte{0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}) // QDCOUNT=1, ANCOUNT=0
+		noErrRes.Write(req[12:idx])                                            // Echo question
+		return noErrRes.Bytes()
 	}
+
+	s.RLock()
+	targetIP := s.TargetIP
+	s.RUnlock()
 
 	var res bytes.Buffer
 	// Header
@@ -127,7 +148,7 @@ func (s *CaptiveDNSServer) createDNSResponse(req []byte) []byte {
 	// RDLENGTH: 4 bytes for IPv4
 	res.Write([]byte{0x00, 0x04})
 	// RDATA: IPv4 target IP
-	res.Write(s.TargetIP)
+	res.Write(targetIP)
 
 	return res.Bytes()
 }

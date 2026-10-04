@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"airmesh/server"
 )
@@ -51,8 +52,7 @@ func main() {
 	if *dnsFlag {
 		dns, err := server.StartCaptiveDNS(primaryIP)
 		if err != nil {
-			// Not critical: non-admin users cannot bind to 53, server still works!
-			// fmt.Printf("⚠️  DNS uyarısı: %v\n", err)
+			fmt.Printf("ℹ️  DNS Bilgisi: Port 53 açılamadı (%v).\n    (Windows ICS devrede ise bu beklenen durumdur; AirMesh HTTP üzerinden çalışmaya devam eder.)\n\n", err)
 		} else {
 			dnsServer = dns
 			defer dnsServer.Stop()
@@ -84,10 +84,12 @@ func main() {
 	// Print beautiful terminal banner with actual active port
 	server.PrintBanner(localIPs, port, sharedDir, dnsServer != nil, hotspotCfg)
 
-	// Create and start HTTP server with 4MB TCP socket buffers and TCP_NODELAY
+	// Create and start HTTP server with 4MB TCP socket buffers, Slowloris protection and TCP_NODELAY
 	srv := server.NewServer(sharedDir, webSubFS)
 	httpServer := &http.Server{
-		Handler: srv.Routes(),
+		Handler:           srv.Routes(),
+		ReadHeaderTimeout: 5 * time.Second, // Slowloris mitigation
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Graceful shutdown handling

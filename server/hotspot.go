@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -22,6 +23,13 @@ var (
 
 // GetHotspotConfig queries Windows 10/11 Mobile Hotspot configuration
 func GetHotspotConfig() (*HotspotConfig, error) {
+	if runtime.GOOS != "windows" {
+		return &HotspotConfig{
+			State: "Unsupported",
+			SSID:  "AirMesh (Masaüstü Modu)",
+		}, nil
+	}
+
 	hotspotMu.Lock()
 	defer hotspotMu.Unlock()
 
@@ -68,6 +76,10 @@ $obj | ConvertTo-Json -Compress
 
 // ToggleHotspot starts or stops the Windows 10/11 Mobile Hotspot
 func ToggleHotspot(enable bool) error {
+	if runtime.GOOS != "windows" {
+		return fmt.Errorf("hotspot otomasyonu şu anda yalnızca Windows 10/11 üzerinde desteklenmektedir")
+	}
+
 	hotspotMu.Lock()
 	defer hotspotMu.Unlock()
 

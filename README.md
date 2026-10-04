@@ -51,7 +51,7 @@ Alıcı cihazlara (telefon, tablet, dizüstü bilgisayar) **hiçbir uygulama kur
 - **Hiyerarşik Gezinti & Breadcrumbs:** `🏠 Ana Dizin > Klasör > Alt Klasör` şeklinde tıklanabilir ekmek kırıntısı çubuğu ile kolay gezinti.
 - **Alt Klasör Oluşturma (`/api/mkdir`):** Web arayüzünden tek tıkla yeni klasörler oluşturabilme.
 - **Tüm Klasörü Ağacıyla Yükleme:** `<input webkitdirectory>` ve tarayıcı sürükle-bırak `traverseFileTree` motoru sayesinde iç içe tüm klasör ağacı yapısı bozulmadan doğrudan yüklenir.
-- **Canlı ZIP Akışı (`/api/zip`):** Klasörler veya seçilen dosyalar diskte geçici dosya oluşturulmadan, anlık sıkıştırma akışıyla tek tıkla `.zip` olarak indirilir.
+- **Canlı ZIP Akışı (`/api/zip`):** Klasörler veya seçilen dosyalar diskte geçici dosya oluşturulmadan, `zip.Store` moduyla sıfır CPU harcayarak anlık paketleme akışıyla tek tıkla `.zip` olarak indirilir.
 - **Sürükle & Bırak ile Taşıma:** Dosyalar fareyle klasörlerin üzerine sürüklenip bırakılarak taşınabilir.
 
 ### 🖼️ 3. Görsel Medya Galerisi & Tam Ekran Lightbox
@@ -59,17 +59,20 @@ Alıcı cihazlara (telefon, tablet, dizüstü bilgisayar) **hiçbir uygulama kur
 - **Tam Ekran Lightbox:** Resimleri yüksek çözünürlükte, indirmeden tam ekranda inceleme.
 - **Hızlı Filtreleme Rozetleri (Filter Chips):** Canlı sayaçlı `Tümü`, `📁 Klasörler`, `🖼️ Resimler`, `🎬 Videolar`, `🎵 Sesler`, `📄 Belgeler` filtreleri.
 
-### 🔒 4. Oda Güvenliği & PIN Koruması
-- **4 Haneli PIN Kilit Ekranı:** Host istemediği kişilerin dosyalara erişmesini engelleyebilir.
-- **Salt-Okunur (Read-Only) Modu:** Misafirlerin yalnızca dosya indirebilmesini, yükleme yapamamasını sağlar.
-- **Dosya Silme Koruması:** Misafirlerin sunucudaki dosyaları veya klasörleri silmesini kısıtlar (Yalnızca Host silebilir).
+### 🔒 4. Kapsamlı Oda Güvenliği & Dayanıklılık
+- **DNS Rebinding & Host Başlığı Koruması:** Yalnızca yerel IP'ler ve localhost kabul edilir; tarayıcı tabanlı CSRF ve DNS Rebinding saldırıları engellenir.
+- **4 Haneli PIN Kilit Ekranı & Brute-Force Koruması:** Host istemediği kişilerin dosyalara erişmesini engeller; 5 hatalı denemede IP kilitlenir ve sabit zamanlı karşılaştırma ile zamanlama saldırıları önlenir.
+- **Yetkisiz İşlem Koruması:** Windows Gezgini açma (`/api/openfolder`) ve Hotspot açma/kapama (`/api/hotspot`) yalnızca Host PC'ye izin verir.
+- **Atomik Dosya Yükleme & Çakışma Önleyici:** Dosyalar `.tmp` ile atomik yazılır (yarım kalanlar temizlenir); aynı isimli dosyaların üzerine yazılmaz, otomatik `dosya (1).ext` olarak korunur.
+- **Sembolik Link (Symlink) Kaçış Koruması:** `filepath.EvalSymlinks` ve `filepath.Rel` ile paylaşılan dizin sınırları kesin olarak kilitlenir.
+- **Salt-Okunur (Read-Only) Modu & Silme Koruması:** Misafirlerin dosya yüklemesi veya silmesi Host tarafından tek tıkla yasaklanabilir.
 
 ### 💬 5. Çevrimdışı Pano & Anlık Sohbet (Offline Clipboard)
 - İnternet olmadan odadaki tüm telefonlar ve bilgisayarlar arasında şifre, metin, bağlantı ve not paylaşımı.
 - Linkify desteği (tıklanabilir URL'ler) ve tek tıkla panoya kopyalama (`📋`).
 
-### 🎵 6. Senkronize Müzik Çalar (Sync Play)
-- Host üzerinde seçilen bir ses dosyasını WebSocket zaman damgası senkronizasyonuyla odadaki tüm cihazlarda milisaniyelik gecikmeyle aynı anda hoparlör gibi çaldırma.
+### 🎵 6. Eşzamanlı Müzik Çalar (Sync Play)
+- Seçilen bir ses dosyasını WebSocket durum ve oynatma konumu senkronizasyonuyla odadaki tüm cihazlarda ortak hoparlör deneyimiyle çaldırma.
 
 ### 📡 7. Wi-Fi Hotspot Otomasyonu & Cihaz Radarı
 - Windows Mobile Hotspot'u web arayüzünden tek tıkla açma/kapatma (`WinRT / PowerShell`).
