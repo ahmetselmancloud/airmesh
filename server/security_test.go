@@ -1,6 +1,8 @@
 package server
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,35 +83,32 @@ func TestPinRateLimiting(t *testing.T) {
 	}
 }
 
-func TestResolveUniqueFilePath(t *testing.T) {
+func TestCreateUniqueFile(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "airmesh_test_*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	file1 := filepath.Join(tempDir, "test.txt")
-	if err := os.WriteFile(file1, []byte("hello"), 0644); err != nil {
+	f1, path1, err := createUniqueFile(tempDir, "test.txt")
+	if err != nil {
 		t.Fatal(err)
 	}
+	f1.Close()
 
-	// Conflict resolution should produce test (1).txt
-	unique := resolveUniqueFilePath(file1)
-	expected := filepath.Join(tempDir, "test (1).txt")
-	if unique != expected {
-		t.Errorf("Beklenen: %s, Alınan: %s", expected, unique)
+	if filepath.Base(path1) != "test.txt" {
+		t.Errorf("Beklenen: test.txt, Alınan: %s", filepath.Base(path1))
 	}
 
-	// Create test (1).txt as well
-	if err := os.WriteFile(expected, []byte("hello 2"), 0644); err != nil {
+	// Second creation with same name should create test (1).txt
+	f2, path2, err := createUniqueFile(tempDir, "test.txt")
+	if err != nil {
 		t.Fatal(err)
 	}
+	f2.Close()
 
-	// Next should be test (2).txt
-	unique2 := resolveUniqueFilePath(file1)
-	expected2 := filepath.Join(tempDir, "test (2).txt")
-	if unique2 != expected2 {
-		t.Errorf("Beklenen: %s, Alınan: %s", expected2, unique2)
+	if filepath.Base(path2) != "test (1).txt" {
+		t.Errorf("Beklenen: test (1).txt, Alınan: %s", filepath.Base(path2))
 	}
 }
 
@@ -140,6 +139,103 @@ func TestGetSafeRelPathSecurity(t *testing.T) {
 	_, err = srv.getSafeRelPath("../")
 	if err == nil {
 		t.Errorf("Üst dizine çıkış engellenmeliydi")
+	}
+}
+
+func TestIntermediateSymlinkJunctionEscapeBlocked(t *testing.T) {
+	tempShared, err := os.MkdirTemp("", "airmesh_shared_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempShared)
+
+	outsideDir, err := os.MkdirTemp("", "airmesh_outside_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(outsideDir)
+
+	secretFile := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("super_secret"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create symlink inside shared pointing to outsideDir
+	linkPath := filepath.Join(tempShared, "link")
+	err = os.Symlink(outsideDir, linkPath)
+	if err != nil {
+		t.Skip("Symlink oluşturulamadı (Windows Developer Mode veya yetki gerekebilir), test atlanıyor")
+	}
+
+	srv := &Server{SharedDir: tempShared}
+
+	// Attempting to access link/secret.txt must be rejected because it resolves outside tempShared!
+	_, err = srv.getSafeRelPath("link/secret.txt")
+	if err == nil {
+		t.Fatalf("Ara dizin symlink/junction kaçışı engellenmeliydi fakat başarılı oldu!")
+	}
+}
+
+func TestCSRFBlockingWithUntrustedOrigin(t *testing.T) {
+	tempShared, err := os.MkdirTemp("", "airmesh_shared_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempShared)
+
+	victimPath := filepath.Join(tempShared, "victim.txt")
+	_ = os.WriteFile(victimPath, []byte("important data"), 0644)
+
+	srv := NewServer(tempShared, os.DirFS(tempShared))
+	handler := srv.Routes()
+
+	// 1. Untrusted Origin POST to /api/delete
+	req := httptest.NewRequest("POST", "/api/delete?file=victim.txt", nil)
+	req.Header.Set("Origin", "https://evil.com")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("Untrusted Origin isteği 403 Forbidden ile engellenmeliydi, dönen kod: %d", rec.Code)
+	}
+
+	// Verify file was NOT deleted
+	if _, err := os.Stat(victimPath); os.IsNotExist(err) {
+		t.Fatalf("CSRF saldırısı dosyayı sildi! Dosya korunmalıydı.")
+	}
+
+	// 2. Sec-Fetch-Site cross-site
+	req2 := httptest.NewRequest("POST", "/api/delete?file=victim.txt", nil)
+	req2.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec2 := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusForbidden {
+		t.Fatalf("Sec-Fetch-Site: cross-site isteği 403 ile engellenmeliydi, dönen kod: %d", rec2.Code)
+	}
+}
+
+func TestCaptiveAppleProbeLandingPage(t *testing.T) {
+	tempShared, err := os.MkdirTemp("", "airmesh_shared_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempShared)
+
+	srv := NewServer(tempShared, os.DirFS(tempShared))
+	handler := srv.Routes()
+
+	// Probe request with Host: captive.apple.com to /
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "captive.apple.com"
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	// Should not return 400 Bad Request!
+	if rec.Code == http.StatusBadRequest {
+		t.Fatalf("Captive portal probe 400 Bad Request almamalı! Dönen kod: %d", rec.Code)
 	}
 }
 

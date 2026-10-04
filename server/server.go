@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/skip2/go-qrcode"
@@ -47,19 +48,23 @@ type DeviceInfo struct {
 }
 
 type Server struct {
-	SharedDir string
-	WebFS     fs.FS
-	hub       *WSHub
-	sec       *SecurityManager
+	SharedDir               string
+	WebFS                   fs.FS
+	hub                     *WSHub
+	sec                     *SecurityManager
+	activeTransfers         int64
+	hotspotStartedByAirMesh bool
+	hotspotMu               sync.Mutex
 }
 
 func NewServer(sharedDir string, webFS fs.FS) *Server {
-	return &Server{
+	s := &Server{
 		SharedDir: sharedDir,
 		WebFS:     webFS,
-		hub:       newWSHub(),
 		sec:       NewSecurityManager(),
 	}
+	s.hub = newWSHub(s)
+	return s
 }
 
 func (s *Server) Routes() http.Handler {
@@ -67,7 +72,18 @@ func (s *Server) Routes() http.Handler {
 
 	// Captive portal probes redirect
 	captiveHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/", http.StatusFound)
+		targetHost := r.Host
+		h, _, _ := net.SplitHostPort(r.Host)
+		if h == "" {
+			h = r.Host
+		}
+		if !s.sec.IsValidHost(h) {
+			localIPs, _ := GetLocalIPs()
+			if len(localIPs) > 0 {
+				targetHost = fmt.Sprintf("%s:8080", localIPs[0])
+			}
+		}
+		http.Redirect(w, r, fmt.Sprintf("http://%s/", targetHost), http.StatusFound)
 	})
 	mux.Handle("/generate_204", captiveHandler)
 	mux.Handle("/gen_204", captiveHandler)
@@ -116,7 +132,12 @@ func (s *Server) withSecurity(next http.Handler) http.Handler {
 		isCaptiveProbe := path == "/generate_204" || path == "/gen_204" ||
 			path == "/hotspot-detect.html" || path == "/ncsi.txt" || path == "/connecttest.txt"
 
-		if !isCaptiveProbe {
+		isCaptiveHost := strings.Contains(r.Host, "apple.com") ||
+			strings.Contains(r.Host, "gstatic.com") ||
+			strings.Contains(r.Host, "msftconnecttest.com") ||
+			strings.Contains(r.Host, "connectivitycheck")
+
+		if !isCaptiveProbe && !isCaptiveHost {
 			// DNS Rebinding protection: validate Host header
 			if !s.sec.IsValidHost(r.Host) {
 				http.Error(w, "Geçersiz Host başlığı (DNS Rebinding engellendi)", http.StatusBadRequest)
@@ -124,7 +145,7 @@ func (s *Server) withSecurity(next http.Handler) http.Handler {
 			}
 		}
 
-		// Exclude public assets & public auth endpoints
+		// Exclude public assets & public auth endpoints & captive portal landing
 		if path == "/" ||
 			path == "/index.html" ||
 			path == "/style.css" ||
@@ -161,18 +182,21 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
-			if s.sec.IsAllowedOrigin(origin) {
-				w.Header().Set("Access-Control-Allow-Origin", origin)
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-AirMesh-Token")
-				w.Header().Set("Access-Control-Allow-Credentials", "true")
-			} else {
-				// Reject preflight for unauthorized cross-origin requests
-				if r.Method == http.MethodOptions {
-					w.WriteHeader(http.StatusForbidden)
-					return
-				}
+			if !s.sec.IsAllowedOrigin(origin) {
+				// CSRF protection: REJECT any request with an untrusted Origin immediately!
+				http.Error(w, "Cross-Origin istek engellendi (CSRF koruması)", http.StatusForbidden)
+				return
 			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-AirMesh-Token")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
+		// Also check Sec-Fetch-Site to block cross-site attacks
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			http.Error(w, "Cross-Site istek engellendi (Sec-Fetch-Site koruması)", http.StatusForbidden)
+			return
 		}
 
 		if r.Method == http.MethodOptions {
@@ -199,12 +223,18 @@ func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
 
 	var files []FileItem
 	for _, entry := range entries {
+		name := entry.Name()
+		// Filter out temporary upload files, hidden files, and internal airmesh tmp
+		if strings.HasPrefix(name, ".") || strings.Contains(name, ".tmp_") || strings.HasSuffix(name, ".airmesh_tmp") {
+			continue
+		}
+
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 		files = append(files, FileItem{
-			Name:    entry.Name(),
+			Name:    name,
 			Size:    info.Size(),
 			ModTime: info.ModTime().Format("02.01.2006 15:04"),
 			IsDir:   entry.IsDir(),
@@ -247,30 +277,35 @@ func (s *Server) getSafeRelPath(relPath string) (string, error) {
 
 	fullPath := filepath.Join(realShared, clean)
 
-	// If file or target directory exists, resolve symlinks
-	targetPath := fullPath
-	if fi, err := os.Lstat(fullPath); err == nil {
-		if fi.Mode()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(fullPath)
-			if err != nil {
-				return "", errors.New("sembolik link çözülemedi")
+	// ALWAYS evaluate symlinks across the entire chain of directories!
+	realTarget, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		// Target file or directory does not exist yet (e.g. upload or mkdir)
+		// We walk up to find the closest existing parent directory and resolve its symlinks
+		curr := fullPath
+		var nonExistentSuffix []string
+		for {
+			parent := filepath.Dir(curr)
+			base := filepath.Base(curr)
+			nonExistentSuffix = append([]string{base}, nonExistentSuffix...)
+			if realParent, pErr := filepath.EvalSymlinks(parent); pErr == nil {
+				realTarget = filepath.Join(append([]string{realParent}, nonExistentSuffix...)...)
+				break
 			}
-			targetPath = resolved
-		}
-	} else {
-		// Target doesn't exist yet (e.g. upload or mkdir), evaluate parent dir
-		parentDir := filepath.Dir(fullPath)
-		if realParent, err := filepath.EvalSymlinks(parentDir); err == nil {
-			targetPath = filepath.Join(realParent, filepath.Base(fullPath))
+			if parent == curr || parent == filepath.Dir(parent) {
+				realTarget = fullPath
+				break
+			}
+			curr = parent
 		}
 	}
 
-	rel, err := filepath.Rel(realShared, targetPath)
+	rel, err := filepath.Rel(realShared, realTarget)
 	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
 		return "", errors.New("yetkisiz dizin erişimi engellendi (symlink veya path escape)")
 	}
 
-	return targetPath, nil
+	return realTarget, nil
 }
 
 func (s *Server) getSafeFilePath(fileName string) (string, error) {
@@ -403,6 +438,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	atomic.AddInt64(&s.activeTransfers, 1)
+	defer atomic.AddInt64(&s.activeTransfers, -1)
+
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", stat.Name()))
 	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeContent(w, r, stat.Name(), stat.ModTime(), file)
@@ -441,30 +479,37 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		contentType = "application/octet-stream"
 	}
 
+	atomic.AddInt64(&s.activeTransfers, 1)
+	defer atomic.AddInt64(&s.activeTransfers, -1)
+
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", "inline")
 	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeContent(w, r, stat.Name(), stat.ModTime(), file)
 }
 
-// resolveUniqueFilePath checks if target exists and appends (1), (2) to prevent accidental data loss
-func resolveUniqueFilePath(fullPath string) string {
-	if _, err := os.Stat(fullPath); errors.Is(err, os.ErrNotExist) {
-		return fullPath
-	}
+// createUniqueFile atomically creates a non-conflicting file on disk using O_CREATE|O_EXCL
+func createUniqueFile(dir, baseName string) (*os.File, string, error) {
+	ext := filepath.Ext(baseName)
+	nameWithoutExt := strings.TrimSuffix(baseName, ext)
 
-	dir := filepath.Dir(fullPath)
-	base := filepath.Base(fullPath)
-	ext := filepath.Ext(base)
-	nameWithoutExt := strings.TrimSuffix(base, ext)
-
-	for i := 1; i < 10000; i++ {
-		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", nameWithoutExt, i, ext))
-		if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
-			return candidate
+	candidateName := baseName
+	for i := 0; i < 10000; i++ {
+		if i > 0 {
+			candidateName = fmt.Sprintf("%s (%d)%s", nameWithoutExt, i, ext)
+		}
+		targetPath := filepath.Join(dir, candidateName)
+		f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err == nil {
+			return f, targetPath, nil
+		}
+		if !os.IsExist(err) {
+			return nil, "", err
 		}
 	}
-	return filepath.Join(dir, fmt.Sprintf("%s_%d%s", nameWithoutExt, time.Now().UnixNano(), ext))
+	fallbackPath := filepath.Join(dir, fmt.Sprintf("%s_%d%s", nameWithoutExt, time.Now().UnixNano(), ext))
+	f, err := os.OpenFile(fallbackPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	return f, fallbackPath, err
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
@@ -486,6 +531,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		if err == nil && r.MultipartForm != nil {
 			defer r.MultipartForm.RemoveAll() // Clean up temporary multipart files
 			if len(r.MultipartForm.File) > 0 {
+				atomic.AddInt64(&s.activeTransfers, 1)
+				defer atomic.AddInt64(&s.activeTransfers, -1)
+
 				for _, headers := range r.MultipartForm.File {
 					for _, h := range headers {
 						src, err := h.Open()
@@ -498,20 +546,18 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 							_ = src.Close()
 							continue
 						}
-						_ = os.MkdirAll(filepath.Dir(targetPath), 0755)
+						destDir := filepath.Dir(targetPath)
+						_ = os.MkdirAll(destDir, 0755)
 
-						finalPath := resolveUniqueFilePath(targetPath)
-						tmpPath := finalPath + fmt.Sprintf(".tmp_%d", time.Now().UnixNano())
-						dst, err := os.Create(tmpPath)
+						dst, finalPath, err := createUniqueFile(destDir, filepath.Base(targetPath))
 						if err == nil {
 							writer := bufio.NewWriterSize(dst, 4*1024*1024)
 							if _, err := io.Copy(writer, src); err == nil {
 								_ = writer.Flush()
 								_ = dst.Close()
-								_ = os.Rename(tmpPath, finalPath)
 							} else {
 								_ = dst.Close()
-								_ = os.Remove(tmpPath)
+								_ = os.Remove(finalPath)
 							}
 						}
 						_ = src.Close()
@@ -532,40 +578,35 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(fullPath), 0755)
+	destDir := filepath.Dir(fullPath)
+	_ = os.MkdirAll(destDir, 0755)
 
-	finalPath := resolveUniqueFilePath(fullPath)
+	targetBase := filepath.Base(fullPath)
+	outFile, finalPath, err := createUniqueFile(destDir, targetBase)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Dosya oluşturulamadı: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer outFile.Close()
 	savedFileName := filepath.Base(finalPath)
+
+	atomic.AddInt64(&s.activeTransfers, 1)
+	defer atomic.AddInt64(&s.activeTransfers, -1)
 
 	uploader := r.URL.Query().Get("uploader")
 	if uploader == "" {
 		uploader = "Bir Cihaz"
 	}
 
-	// Atomic writing: write to temporary file first, clean up on failure
-	tmpPath := finalPath + fmt.Sprintf(".tmp_%d", time.Now().UnixNano())
-	outFile, err := os.Create(tmpPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Dosya oluşturulamadı: %v", err), http.StatusInternalServerError)
-		return
-	}
-
 	bufWriter := bufio.NewWriterSize(outFile, 4*1024*1024) // 4MB buffer
 	_, err = io.Copy(bufWriter, r.Body)
 	if err != nil {
 		_ = outFile.Close()
-		_ = os.Remove(tmpPath) // Remove orphan partial file
+		_ = os.Remove(finalPath) // Remove partial orphan file on error
 		http.Error(w, fmt.Sprintf("Yazma hatası: %v", err), http.StatusInternalServerError)
 		return
 	}
 	_ = bufWriter.Flush()
-	_ = outFile.Close()
-
-	if err := os.Rename(tmpPath, finalPath); err != nil {
-		_ = os.Remove(tmpPath)
-		http.Error(w, fmt.Sprintf("Dosya taşınamadı: %v", err), http.StatusInternalServerError)
-		return
-	}
 
 	// Broadcast upload notification and list refresh to all clients
 	toastPayload, _ := json.Marshal(map[string]interface{}{
@@ -615,6 +656,9 @@ func (s *Server) handleZipStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	atomic.AddInt64(&s.activeTransfers, 1)
+	defer atomic.AddInt64(&s.activeTransfers, -1)
+
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", archiveName))
 
@@ -632,13 +676,33 @@ func (s *Server) handleZipStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addFileOrDirToZip(zw *zip.Writer, absPath, relName string) {
+	absShared, _ := filepath.Abs(s.SharedDir)
+	realShared, _ := filepath.EvalSymlinks(absShared)
+
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return
 	}
 	if info.IsDir() {
 		_ = filepath.Walk(absPath, func(path string, fi os.FileInfo, err error) error {
-			if err != nil || fi.IsDir() {
+			if err != nil {
+				return nil
+			}
+			// Skip symlinks inside directory walk to prevent escaping shared directory
+			if fi.Mode()&os.ModeSymlink != 0 {
+				return nil
+			}
+			// Verify that evaluated path stays strictly inside realShared
+			realP, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return nil
+			}
+			relCheck, err := filepath.Rel(realShared, realP)
+			if err != nil || strings.HasPrefix(relCheck, "..") || filepath.IsAbs(relCheck) {
+				return nil // Symlink target escapes shared directory!
+			}
+
+			if fi.IsDir() {
 				return nil
 			}
 			subRel, err := filepath.Rel(absPath, path)
@@ -665,6 +729,16 @@ func (s *Server) addFileOrDirToZip(zw *zip.Writer, absPath, relName string) {
 			return nil
 		})
 	} else {
+		// Ensure single file is also inside realShared
+		realP, err := filepath.EvalSymlinks(absPath)
+		if err != nil {
+			return
+		}
+		relCheck, err := filepath.Rel(realShared, realP)
+		if err != nil || strings.HasPrefix(relCheck, "..") || filepath.IsAbs(relCheck) {
+			return
+		}
+
 		f, err := os.Open(absPath)
 		if err != nil {
 			return
@@ -717,8 +791,14 @@ func (s *Server) handleHotspot(w http.ResponseWriter, r *http.Request) {
 		action := r.URL.Query().Get("action")
 		if action == "start" {
 			_ = ToggleHotspot(true)
+			s.hotspotMu.Lock()
+			s.hotspotStartedByAirMesh = true
+			s.hotspotMu.Unlock()
 		} else if action == "stop" {
 			_ = ToggleHotspot(false)
+			s.hotspotMu.Lock()
+			s.hotspotStartedByAirMesh = false
+			s.hotspotMu.Unlock()
 		}
 	}
 
@@ -861,11 +941,13 @@ type WSHub struct {
 	clients     map[*WSClient]bool
 	lastSyncMsg []byte
 	emptyTimer  *time.Timer
+	server      *Server
 }
 
-func newWSHub() *WSHub {
+func newWSHub(srv *Server) *WSHub {
 	return &WSHub{
 		clients: make(map[*WSClient]bool),
+		server:  srv,
 	}
 }
 
@@ -915,9 +997,22 @@ func (h *WSHub) unregister(c *WSClient) {
 			h.emptyTimer.Stop()
 		}
 		h.emptyTimer = time.AfterFunc(5*time.Minute, func() {
-			fmt.Println("\n💤 [Akıllı Güç Tasarrufu] 5 dakikadır bağlı alıcı cihaz bulunamadı. Hotspot kapatılıyor...")
-			if runtime.GOOS == "windows" {
-				_ = ToggleHotspot(false)
+			h.mu.Lock()
+			clientCount := len(h.clients)
+			h.mu.Unlock()
+
+			if clientCount == 0 {
+				// Only shut down hotspot if no active HTTP transfers are running AND AirMesh turned it on
+				if h.server != nil && atomic.LoadInt64(&h.server.activeTransfers) == 0 {
+					h.server.hotspotMu.Lock()
+					startedByUs := h.server.hotspotStartedByAirMesh
+					h.server.hotspotMu.Unlock()
+
+					if startedByUs && runtime.GOOS == "windows" {
+						fmt.Println("\n💤 [Akıllı Güç Tasarrufu] 5 dakikadır bağlı alıcı ve aktif transfer bulunamadı. Hotspot kapatılıyor...")
+						_ = ToggleHotspot(false)
+					}
+				}
 			}
 		})
 	}
@@ -957,6 +1052,13 @@ func (h *WSHub) broadcast(msg []byte) {
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Origin check on WebSocket to prevent Cross-Site WebSocket Hijacking (CSWSH)
+	origin := r.Header.Get("Origin")
+	if origin != "" && !s.sec.IsAllowedOrigin(origin) {
+		http.Error(w, "Cross-Origin WebSocket bağlantısı engellendi", http.StatusForbidden)
+		return
+	}
+
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		http.Error(w, "Not a websocket handshake", http.StatusBadRequest)
 		return

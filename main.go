@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -56,6 +58,22 @@ func main() {
 		} else {
 			dnsServer = dns
 			defer dnsServer.Stop()
+
+			// Dynamic IP updater: if Hotspot starts and assigns 192.168.137.1, update DNS target IP immediately!
+			go func() {
+				ticker := time.NewTicker(5 * time.Second)
+				for range ticker.C {
+					newIPs, err := server.GetLocalIPs()
+					if err == nil && len(newIPs) > 0 {
+						for _, nip := range newIPs {
+							if strings.HasPrefix(nip, "192.168.137.") {
+								dnsServer.SetTargetIP(net.ParseIP(nip))
+								break
+							}
+						}
+					}
+				}
+			}()
 		}
 	}
 
@@ -77,6 +95,19 @@ func main() {
 	if listener == nil {
 		log.Fatalf("Port %d ve sonraki portlar dinlenemedi.", *portFlag)
 	}
+
+	// Try port 80 auxiliary redirector for seamless Captive Portal detection on mobile
+	go func() {
+		p80Listener, err := net.Listen("tcp", ":80")
+		if err == nil {
+			defer p80Listener.Close()
+			p80Mux := http.NewServeMux()
+			p80Mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, fmt.Sprintf("http://%s:%d/", localIPs[0], port), http.StatusFound)
+			})
+			_ = http.Serve(p80Listener, p80Mux)
+		}
+	}()
 
 	// Query Windows Mobile Hotspot config
 	hotspotCfg, _ := server.GetHotspotConfig()

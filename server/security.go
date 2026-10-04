@@ -115,7 +115,7 @@ func (sm *SecurityManager) IsValidHost(hostHeader string) bool {
 	return false
 }
 
-// IsAllowedOrigin checks if incoming Origin is trusted
+// IsAllowedOrigin checks if incoming Origin is trusted (same-origin / local)
 func (sm *SecurityManager) IsAllowedOrigin(originHeader string) bool {
 	if originHeader == "" {
 		return true
@@ -192,9 +192,14 @@ func (sm *SecurityManager) VerifyPin(clientIP, pin string) (string, bool, string
 		return "", false, fmt.Sprintf("Çok fazla hatalı deneme! Lütfen %d saniye bekleyin.", waitSec)
 	}
 
+	// If PIN is enabled but PinCode is not configured, deny access
+	if sm.PinEnabled && len(sm.PinCode) < 4 {
+		return "", false, "Oda PIN kodu henüz yapılandırılmamış."
+	}
+
 	// Constant-time check
 	pinMatch := subtle.ConstantTimeCompare([]byte(pin), []byte(sm.PinCode)) == 1
-	if !sm.PinEnabled || pinMatch {
+	if !sm.PinEnabled || (pinMatch && len(pin) >= 4) {
 		// Reset failure counter on success
 		att.count = 0
 		att.lockedUntil = time.Time{}
@@ -224,8 +229,14 @@ func (sm *SecurityManager) UpdateConfig(pinEnabled bool, pinCode string, readOnl
 	defer sm.Unlock()
 
 	sm.PinEnabled = pinEnabled
-	if pinCode != "" {
-		sm.PinCode = strings.TrimSpace(pinCode)
+	cleanPin := strings.TrimSpace(pinCode)
+	if pinEnabled {
+		if len(cleanPin) < 4 {
+			cleanPin = fmt.Sprintf("%04d", 1000+time.Now().UnixNano()%9000)
+		}
+		sm.PinCode = cleanPin
+	} else if cleanPin != "" {
+		sm.PinCode = cleanPin
 	}
 	sm.ReadOnly = readOnly
 	sm.AllowDelete = allowDelete
